@@ -235,6 +235,81 @@ final class TopHomeHook {
         // LG's profile sets the dock icon size again after the base constructor.
         Class<?> lgProfile = XposedHelpers.findClassIfExists("com.lge.launcher3.profile.LGDeviceProfile", cl);
         if (lgProfile != null) XposedBridge.hookAllConstructors(lgProfile, dockFits);
+        // An open folder in landscape: LG's rows (folderCellHeightPxForSwivel, about 238 px,
+        // four of them) are taller than the folder's content area, which centered them and
+        // pushed the first row's icons up under the title. The rows share the content area
+        // instead, and each folder icon shrinks to what its row leaves above a one-line label.
+        XC_MethodHook folderRows = new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                Object p = param.thisObject;
+                if (!XposedHelpers.getBooleanField(p, "isLandscape")) return;
+                // LG uses one pair or the other (carousel layout or not): both share the area.
+                int row = folderRowHeight(p, "numFolderRowsForSwivel");
+                if (row > 0) XposedHelpers.setIntField(p, "folderCellHeightPxForSwivel", row);
+                row = folderRowHeight(p, "numFolderRows");
+                if (row > 0) XposedHelpers.setIntField(p, "folderCellHeightPx", row);
+            }
+        };
+        XposedBridge.hookAllConstructors(profile, folderRows);
+        XposedBridge.hookAllMethods(profile, "updateIconSize", folderRows);
+        if (lgProfile != null) XposedBridge.hookAllConstructors(lgProfile, folderRows);
+        Class<?> folderPages = XposedHelpers.findClassIfExists("com.android.launcher3.folder.FolderPagedView", cl);
+        if (folderPages != null) {
+            XposedBridge.hookAllMethods(folderPages, "createNewView", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    if (!(param.getResult() instanceof android.widget.TextView)) return;
+                    android.widget.TextView t = (android.widget.TextView) param.getResult();
+                    Object profile = XposedHelpers.callMethod(t.getContext(), "getDeviceProfile");
+                    if (!XposedHelpers.getBooleanField(profile, "isLandscape")) return;
+                    int row = Math.min(XposedHelpers.getIntField(profile, "folderCellHeightPxForSwivel"),
+                            XposedHelpers.getIntField(profile, "folderCellHeightPx"));
+                    android.graphics.drawable.Drawable icon = t.getCompoundDrawables()[1];
+                    if (icon == null || row <= 0) return;
+                    t.setMaxLines(1);
+                    int room = row - t.getPaddingTop() - t.getPaddingBottom()
+                            - t.getCompoundDrawablePadding() - Math.round(t.getLineHeight() * 1.3f);
+                    if (room <= 0) return;
+                    // Icons arriving later (the icon cache) are set at full size again.
+                    XposedHelpers.setAdditionalInstanceField(t, "folderIconSize", room);
+                    if (icon.getBounds().width() <= room) return;
+                    icon.setBounds(0, 0, room, room);
+                    t.setCompoundDrawables(null, icon, null, null);
+                }
+            });
+            Class<?> bubble = XposedHelpers.findClassIfExists("com.android.launcher3.BubbleTextView", cl);
+            if (bubble != null) XposedBridge.hookAllMethods(bubble, "setIcon", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    Object size = XposedHelpers.getAdditionalInstanceField(param.thisObject, "folderIconSize");
+                    if (size == null || param.args.length < 2 || !(param.args[1] instanceof Integer)) return;
+                    int s = (Integer) size, own = (Integer) param.args[1];
+                    if (own == -1 || own > s) param.args[1] = s;
+                }
+            });
+        }
+        // The open folder sits on the bottom edge in landscape (the swivel top screen's place
+        // for it), leaving the panel's top empty: centered between the status and nav bars.
+        Class<?> folderView = XposedHelpers.findClassIfExists("com.android.launcher3.folder.Folder", cl);
+        if (folderView != null) {
+            XposedBridge.hookAllMethods(folderView, "centerAboutIcon", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    android.view.View f = (android.view.View) param.thisObject;
+                    if (f.getResources().getConfiguration().orientation
+                            != android.content.res.Configuration.ORIENTATION_LANDSCAPE) return;
+                    Object lp = f.getLayoutParams();
+                    if (!(f.getParent() instanceof android.view.View) || lp == null) return;
+                    android.content.res.Resources sys = android.content.res.Resources.getSystem();
+                    int top = dimen(sys, "status_bar_height"), nav = dimen(sys, "navigation_bar_height");
+                    int h = XposedHelpers.getIntField(lp, "height");
+                    int avail = ((android.view.View) f.getParent()).getHeight() - top - nav;
+                    if (h <= 0 || avail <= h) return;
+                    XposedHelpers.setIntField(lp, "y", top + (avail - h) / 2);
+                }
+            });
+        }
         // The dock's app drawer button: icon beside the words in landscape; icon only, as in
         // portrait, like the rest of the dock.
         Class<?> hotseat = XposedHelpers.findClassIfExists("com.android.launcher3.Hotseat", cl);
@@ -364,6 +439,24 @@ final class TopHomeHook {
                 }
             }
         });
+    }
+
+    // The folder's content area (its swivel-landscape height less the footer) shared by its rows.
+    private static int dimen(android.content.res.Resources r, String name) {
+        int id = r.getIdentifier(name, "dimen", "android");
+        return id == 0 ? 0 : r.getDimensionPixelSize(id);
+    }
+
+    private static int folderRowHeight(Object profile, String rowsField) {
+        android.app.Application app = android.app.AndroidAppHelper.currentApplication();
+        if (app == null) return 0;
+        android.content.res.Resources r = app.getResources();
+        int wrapper = r.getIdentifier("folder_content_wrapper_height_swivel_land", "dimen", PKG);
+        int footer = r.getIdentifier("folder_footer_height", "dimen", PKG);
+        int rows = XposedHelpers.getIntField(XposedHelpers.getObjectField(profile, "inv"), rowsField);
+        if (wrapper == 0 || rows <= 0) return 0;
+        int space = r.getDimensionPixelSize(wrapper) - (footer == 0 ? 0 : r.getDimensionPixelSize(footer));
+        return space / rows;
     }
 
     private static void stack(android.view.View v, boolean fill) {
