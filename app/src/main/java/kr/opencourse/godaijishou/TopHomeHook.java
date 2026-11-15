@@ -100,6 +100,8 @@ final class TopHomeHook {
     // --- Second screen gestures after a switch ---
 
     private static final String TOUCH_SERVICE = "com.android.quickstep.TouchInteractionService";
+    // The last second-screen gesture monitor setup failed (display 4 off at the time).
+    private static volatile boolean monitorFailed;
 
     /**
      * Quickstep watches the second screen's gestures (home, recents) through an input monitor
@@ -111,6 +113,24 @@ final class TopHomeHook {
     private static void installSecondScreenGestures(ClassLoader cl) {
         Class<?> service = XposedHelpers.findClassIfExists(TOUCH_SERVICE, cl);
         if (service == null) return;
+        // Started while swapped, display 4 is the top panel, off, and takes no gesture monitor:
+        // LG's own setup threw and took the home down in a loop. No monitor there then; the
+        // display listener below sets it up when display 4 is a usable screen again.
+        XposedBridge.hookAllMethods(service, "initInputMonitorForMulti", new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                try {
+                    XposedBridge.invokeOriginalMethod(param.method, param.thisObject, param.args);
+                    monitorFailed = false;
+                } catch (java.lang.reflect.InvocationTargetException e) {
+                    monitorFailed = true;
+                    if (!(e.getCause() instanceof IllegalArgumentException)) ModuleLog.w(e);
+                } catch (Throwable t) {
+                    ModuleLog.w(t);
+                }
+                param.setResult(null);
+            }
+        });
         XposedBridge.hookAllMethods(service, "onCreate", new XC_MethodHook() {
             @Override
             protected void afterHookedMethod(MethodHookParam param) {
@@ -136,6 +156,14 @@ final class TopHomeHook {
 
                         @Override
                         public void onDisplayChanged(int displayId) {
+                            // Only after a failed setup (started swapped): once display 4 is
+                            // a usable screen again, set the monitor up.
+                            if (displayId != MainModule.SECOND_SCREEN_DISPLAY_ID || !monitorFailed) return;
+                            try {
+                                XposedHelpers.callMethod(s, "initInputMonitorForMulti");
+                            } catch (Throwable t) {
+                                ModuleLog.w(t);
+                            }
                         }
                     }, main);
                 } catch (Throwable t) {
