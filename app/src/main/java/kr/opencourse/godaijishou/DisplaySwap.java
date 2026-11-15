@@ -28,6 +28,8 @@ import de.robv.android.xposed.XposedHelpers;
 final class DisplaySwap {
 
     static final String KEY_TEST = "godaijishou_swap_test";
+    /** Settings.Global: the remote emergency exit (any non-zero value restores at once). */
+    static final String KEY_ESCAPE = "godaijishou_escape";
     private static final long TEST_MILLIS = 30_000;
 
     private static Object mapper;   // LogicalDisplayMapper
@@ -162,6 +164,20 @@ final class DisplaySwap {
                             set(on);
                             h.removeCallbacks(TIMEOUT);
                             if (on) h.postDelayed(TIMEOUT, TEST_MILLIS);
+                        }
+                    });
+            // The remote emergency exit: writing anything but 0 restores the phone's own
+            // displays (locked, black, any state), then clears itself. The value changing
+            // is the trigger, so writing it again always fires.
+            Settings.Global.putInt(c.getContentResolver(), KEY_ESCAPE, 0);
+            c.getContentResolver().registerContentObserver(Settings.Global.getUriFor(KEY_ESCAPE), false,
+                    new ContentObserver(h) {
+                        @Override
+                        public void onChange(boolean selfChange) {
+                            if (Settings.Global.getInt(c.getContentResolver(), KEY_ESCAPE, 0) != 0) {
+                                Settings.Global.putInt(c.getContentResolver(), KEY_ESCAPE, 0);
+                                restoreNow();
+                            }
                         }
                     });
             IntentFilter f = new IntentFilter(Intent.ACTION_SCREEN_OFF);

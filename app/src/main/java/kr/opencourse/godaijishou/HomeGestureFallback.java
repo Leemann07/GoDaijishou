@@ -6,6 +6,7 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.os.SystemClock;
+import android.view.Display;
 import android.view.InputEvent;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
@@ -25,19 +26,21 @@ import de.robv.android.xposed.XposedHelpers;
  * injects APP_SWITCH (recents). With LG's home default this stays out of the way
  * entirely; the lock screen and the home screen itself keep their own swipes.
  *
- * The NavigationHandle watcher that animates the pill already decides what looks like
- * a bottom swipe, so this rides on its verdict (the pill must have risen): no second
- * detection to disagree with the system.
+ * The gesture is read from the motion stream itself. LG keeps several pill watchers per
+ * display, and the one that first sees a gesture's down is not always the one whose pill
+ * rises (which of them registers first varies per boot), so LG's own rise value cannot
+ * be trusted per instance: a swipe that starts in the bottom bezel and travels far
+ * enough up is the gesture, whoever drew the pill.
  */
 final class HomeGestureFallback {
     private static final String GESTURAL = "com.android.systemui.navigationbar.gestural.";
     private static final String RECEIVER = GESTURAL + "NavigationHandle$SysUiInputEventReceiver";
     private static final String LG_HOME = "com.lge.launcher3";
 
-    // The swipe must travel at least this part of the gesture bar (the pill's own rise).
-    private static final float RISE_FRACTION = 0.6f;
-    // A fling faster than this (px per ms upward) is HOME; slower than half of it, held
-    // at the top for a beat, is RECENTS.
+    private static final float START_ZONE_FRACTION = 0.10f; // of the height: the bottom bezel
+    private static final float RISE_FRACTION = 0.12f;       // of the height: a real swipe
+    // A fling faster than this (px per ms upward) is HOME; slower, held near the top for
+    // a beat, is RECENTS.
     private static final float FLING_DP_PER_MS = 0.35f;
     private static final long HOLD_MS = 200;
 
@@ -47,8 +50,8 @@ final class HomeGestureFallback {
     private static Object owner;
     private static long ownerDownTime = -1;
 
-    // The gesture being watched.
-    private static float lastY, maxY;
+    // The gesture being watched, in display coordinates.
+    private static float downY, lastY, height;
     private static long lastMoveAt, heldSince = -1;
 
     // The resolved home package ("?" until read): only LG's own runs the gesture itself.
@@ -85,8 +88,8 @@ final class HomeGestureFallback {
                 if (ownerDownTime == ev.getDownTime()) return; // another watcher owns it
                 ownerDownTime = ev.getDownTime();
                 owner = receiver;
-                lastY = ev.getY();
-                maxY = 0;
+                downY = lastY = ev.getY();
+                height = context.getResources().getDisplayMetrics().heightPixels;
                 lastMoveAt = ev.getEventTime();
                 heldSince = -1;
             }
@@ -103,7 +106,7 @@ final class HomeGestureFallback {
                 }
             }
             if (complete && action == MotionEvent.ACTION_UP && ev.getPointerCount() <= 1) {
-                finished(handle, context, ev);
+                finished(context, ev);
             }
             return;
         }
@@ -117,35 +120,30 @@ final class HomeGestureFallback {
             }
             lastY = ev.getY();
             lastMoveAt = ev.getEventTime();
-            float dy = rise(handle);
-            if (dy > maxY) {
-                // Held near the top of its travel, waiting: the recents pose.
-                if (dy >= riseLimit(handle) * RISE_FRACTION && heldSince < 0) heldSince = ev.getEventTime();
-                maxY = dy;
+            if (heldSince < 0 && downY - lastY >= height * RISE_FRACTION) {
+                heldSince = ev.getEventTime(); // reached the top of its travel, waiting
             }
         }
     }
 
-    private static void finished(View handle, Context context, MotionEvent up) {
-        float dy = rise(handle);
-        float limit = riseLimit(handle);
-        if (dy < limit * RISE_FRACTION) {
-            trace("short rise: dy=" + dy + " limit=" + limit);
-            return; // the pill never really rose
+    private static void finished(Context context, MotionEvent up) {
+        float rise = downY - up.getY();
+        if (rise < height * RISE_FRACTION || downY < height * (1f - START_ZONE_FRACTION)) {
+            return; // not far enough, or it did not start in the bottom bezel
         }
         String why = enabledWhy(context);
         if (why != null) {
-            trace("suppressed: " + why + " dy=" + dy);
+            trace("suppressed: " + why + " rise=" + rise);
             return;
         }
         long now = up.getEventTime();
         long dt = Math.max(1, now - lastMoveAt);
         float speed = Math.max(0f, lastY - up.getY()) / dt; // px per ms upward at the release
-        boolean fling = speed >= FLING_DP_PER_MS * density(handle);
+        boolean fling = speed >= FLING_DP_PER_MS * context.getResources().getDisplayMetrics().density;
         boolean held = heldSince > 0 && now - heldSince >= HOLD_MS;
         int code = fling || !held ? KeyEvent.KEYCODE_HOME : KeyEvent.KEYCODE_APP_SWITCH;
         trace("fire " + (code == KeyEvent.KEYCODE_HOME ? "HOME" : "RECENTS")
-                + " dy=" + dy + " speed=" + speed + " held=" + held);
+                + " rise=" + rise + " speed=" + speed + " held=" + held);
         inject(code);
     }
 
@@ -176,7 +174,7 @@ final class HomeGestureFallback {
     private static boolean onMainDisplay(Context context) {
         if (context == null) return false;
         try {
-            return (int) XposedHelpers.callMethod(context, "getDisplayId") == android.view.Display.DEFAULT_DISPLAY;
+            return (int) XposedHelpers.callMethod(context, "getDisplayId") == Display.DEFAULT_DISPLAY;
         } catch (Throwable t) {
             return false;
         }
@@ -212,28 +210,6 @@ final class HomeGestureFallback {
             ModuleLog.w(t);
         }
         return null;
-    }
-
-    // --- LG's own pill measurements ---
-
-    private static float rise(View handle) {
-        try {
-            return XposedHelpers.getFloatField(handle, "mDy");
-        } catch (Throwable t) {
-            return 0;
-        }
-    }
-
-    private static float riseLimit(View handle) {
-        try {
-            return XposedHelpers.getIntField(handle, "mFullgestureNavHeight");
-        } catch (Throwable t) {
-            return handle.getHeight() * 2; // unknown firmware: a rough bar and a half
-        }
-    }
-
-    private static float density(View handle) {
-        return handle.getResources().getDisplayMetrics().density;
     }
 
     // --- The action ---
