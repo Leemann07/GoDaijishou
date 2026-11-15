@@ -13,7 +13,7 @@
 #   recents    (main screen only) recents key -> overview on B
 #   power      power key held -> a power menu with focus on B
 #   density    the bottom panel keeps the density it started with
-#   leaks      SystemUI gesture watchers on B stay few (warning only)
+#   leaks      SystemUI gesture watchers on B do not grow
 set -u
 export MSYS_NO_PATHCONV=1
 
@@ -141,7 +141,8 @@ check_round() {
     sui=$(pid_of com.android.systemui)
     local n
     n=$(watchers_on "$sui" "$b")
-    if [ "$n" -le 2 ]; then ok "systemui watchers $n"; else warn "systemui watchers on display $b: $n"; fi
+    [ -n "${WATCHERS[$b]:-}" ] || WATCHERS[$b]=$n
+    if [ "$n" -le "${WATCHERS[$b]}" ]; then ok "systemui watchers $n"; else bad "leak: systemui watchers on display $b grew ${WATCHERS[$b]} -> $n"; fi
 }
 
 switch() {
@@ -155,6 +156,7 @@ adb get-state >/dev/null 2>&1 || { echo "no device"; exit 2; }
 if sh dumpsys window | grep -q "isKeyguardShowing=true"; then echo "unlock the phone first"; exit 2; fi
 
 DENSITY=""
+declare -A WATCHERS
 R=0
 check_round
 for R in $(seq 1 "$ROUNDS"); do
