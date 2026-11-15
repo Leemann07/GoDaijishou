@@ -65,6 +65,7 @@ final class TopHomeHook {
             }
         });
         installGridOnce(cl);
+        installSecondScreenGestures(cl);
         for (String name : new String[] {POSTURE, DISPLAY_HELPER}) {
             Class<?> c = XposedHelpers.findClassIfExists(name, cl);
             if (c == null) continue;
@@ -92,6 +93,54 @@ final class TopHomeHook {
         };
         XposedBridge.hookAllMethods(source, "registerPostureStateCallback", register);
         XposedBridge.hookAllMethods(source, "registerSwivelStateCallback", register);
+    }
+
+    // --- Second screen gestures after a switch ---
+
+    private static final String TOUCH_SERVICE = "com.android.quickstep.TouchInteractionService";
+
+    /**
+     * Quickstep watches the second screen's gestures (home, recents) through an input monitor
+     * on display 4, set up at start and on swivel events. Main screen mode removes display 4
+     * (its monitor goes with it) and adds it back on the way out, with no swivel event: the
+     * second screen came back without gestures. Display 4 added again: set the monitor up again
+     * (LG's own setup, which drops a stale one first).
+     */
+    private static void installSecondScreenGestures(ClassLoader cl) {
+        Class<?> service = XposedHelpers.findClassIfExists(TOUCH_SERVICE, cl);
+        if (service == null) return;
+        XposedBridge.hookAllMethods(service, "onCreate", new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                Object s = param.thisObject;
+                try {
+                    android.hardware.display.DisplayManager dm = ((Context) s)
+                            .getSystemService(android.hardware.display.DisplayManager.class);
+                    android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
+                    dm.registerDisplayListener(new android.hardware.display.DisplayManager.DisplayListener() {
+                        @Override
+                        public void onDisplayAdded(int displayId) {
+                            if (displayId != MainModule.SECOND_SCREEN_DISPLAY_ID) return;
+                            try {
+                                XposedHelpers.callMethod(s, "initInputMonitorForMulti");
+                            } catch (Throwable t) {
+                                ModuleLog.w(t);
+                            }
+                        }
+
+                        @Override
+                        public void onDisplayRemoved(int displayId) {
+                        }
+
+                        @Override
+                        public void onDisplayChanged(int displayId) {
+                        }
+                    }, main);
+                } catch (Throwable t) {
+                    ModuleLog.w(t);
+                }
+            }
+        });
     }
 
     // --- Home grid 4x4, once ---
@@ -153,6 +202,10 @@ final class TopHomeHook {
     }
 
     private static void folded(Class<?> callback) {
+        // Quickstep's gesture service hears the real state: on "open" it puts its home and
+        // recents gesture watcher on the second screen, on anything else it drops it. Folded,
+        // the second screen lost its gestures at the first swivel event (every mode switch).
+        if (callback.getName().startsWith("com.android.quickstep.")) return;
         for (Class<?> c = callback; c != null && c != Object.class; c = c.getSuperclass()) {
             if (!hookedCallbacks.add(c)) return; // this class (and its parents) done already
             try {

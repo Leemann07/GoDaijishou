@@ -73,7 +73,8 @@ final class MainScreen {
             }
             return;
         }
-        if (kept() == epoch) {
+        // Kept once on this phone: from then on it switches without asking again.
+        if (kept() >= 0) {
             if (!DisplaySwap.isSwapped()) {
                 DisplaySwap.set(true);
                 bringAppsLater();
@@ -255,12 +256,83 @@ final class MainScreen {
         }
     }
 
-    /** Volume up + down. */
+    /**
+     * Volume up + down: main screen <-> second screen. Swapped (or asking), back to the
+     * second screen and kept there. Otherwise, with main screen mode applied in the app and
+     * its hooks loaded, the main screen again: at once if it was kept before, else the
+     * "keep?" card. Pressing again always goes back, so a switch can never strand anyone.
+     */
+    static void toggle() {
+        if (DisplaySwap.isSwapped() || trial) {
+            escape();
+            return;
+        }
+        if (!present()) {
+            // Asleep or locked the swap is always undone, so flip the picked mode instead; it
+            // shows on unlock. A buzz tells which: one tick second screen, two main screen.
+            boolean wantMain = SystemSettings.screenMode == AppPreferences.SCREEN_MODE_ORIGINAL
+                    && !TopMirror.isEscaped();
+            if (wantMain) {
+                escape();
+                buzz(1);
+            } else if (SystemSettings.mainReady) {
+                switchOn();
+                buzz(2);
+            }
+            return;
+        }
+        if (SystemSettings.mainReady) switchOn();
+    }
+
+    private static void switchOn() {
+        if (SystemSettings.screenMode == AppPreferences.SCREEN_MODE_ORIGINAL) {
+            TopMirror.clearEscape(); // picked but left with the keys: on again
+            apply();
+        } else {
+            tellApp(AppPreferences.SCREEN_MODE_ORIGINAL); // its settings come back here
+        }
+    }
+
+    // Pulses felt in a pocket: LG's vibrator plays its click and double click alike, so plain
+    // pulses (80 ms each, 150 ms apart), as hardware feedback like the keys' own.
+    private static void buzz(int pulses) {
+        try {
+            android.os.Vibrator v = SystemSettings.context().getSystemService(android.os.Vibrator.class);
+            if (v == null) return;
+            long[] timings = pulses == 1 ? new long[] {0, 80} : new long[] {0, 80, 150, 80};
+            android.os.VibrationEffect effect = android.os.VibrationEffect.createWaveform(timings, -1);
+            if (android.os.Build.VERSION.SDK_INT >= 33) {
+                v.vibrate(effect, android.os.VibrationAttributes.createForUsage(
+                        android.os.VibrationAttributes.USAGE_HARDWARE_FEEDBACK));
+            } else {
+                v.vibrate(effect);
+            }
+        } catch (Throwable t) {
+            ModuleLog.w(t);
+        }
+    }
+
+    /** Back to the second screen at once (keys, a trial nobody kept); the app follows. */
     static void escape() {
         endTrial();
         ownSwap = false;
-        TopMirror.escape();
+        TopMirror.escape(); // holds even if the app never hears of it
         DisplaySwap.restoreNow();
+        tellApp(AppPreferences.SCREEN_MODE_SECOND);
+    }
+
+    // The app keeps the mode (and shows it): it writes it and its provider tells us back.
+    private static void tellApp(int mode) {
+        try {
+            Context c = SystemSettings.context();
+            android.content.Intent i = new android.content.Intent(ModeSwitchReceiver.ACTION)
+                    .setClassName(BuildConfig.APPLICATION_ID, ModeSwitchReceiver.class.getName())
+                    .putExtra(ModeSwitchReceiver.EXTRA_MODE, mode)
+                    .addFlags(android.content.Intent.FLAG_RECEIVER_FOREGROUND);
+            c.sendBroadcastAsUser(i, android.os.Process.myUserHandle());
+        } catch (Throwable t) {
+            ModuleLog.w(t);
+        }
     }
 
     // --- Trial ---
