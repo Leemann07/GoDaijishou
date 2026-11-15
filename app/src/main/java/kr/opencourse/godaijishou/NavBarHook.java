@@ -1,10 +1,8 @@
 package kr.opencourse.godaijishou;
 
 import android.content.Context;
-import android.content.res.Resources;
 import android.database.ContentObserver;
 import android.graphics.Canvas;
-import android.graphics.Paint;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.View;
@@ -22,14 +20,14 @@ import de.robv.android.xposed.XposedHelpers;
  *
  * Slim gesture pill (scope: com.android.systemui)
  *   The home pill is drawn thinner (2/3) and narrower (2/3), in the stock color and spot
- *   (LG's NavigationHandle size fields are scaled; its own drawing does the rest).
+ *   (only the drawing canvas is scaled; LG's size and motion fields stay untouched).
  *   Only the drawing changes; the gesture area and the gestures themselves are the system's.
  *
  * Keyboard bottom strip off (scope: com.android.systemui + the keyboard app)
  *   With gesture navigation the keyboard sits on a strip as tall as the old 3-button bar,
  *   holding the "hide keyboard" and switcher buttons. The strip's height is the framework
  *   keyboard's own NavigationBarController: it is told there is no bottom inset and its frame
- *   is hidden. SystemUI is left alone (LG places the gesture pill from the bar's height).
+ *   is hidden. SystemUI's navigation frame and input area keep their stock heights.
  *   Takes effect when the keyboard restarts (or after a reboot).
  */
 final class NavBarHook {
@@ -54,7 +52,6 @@ final class NavBarHook {
     // --- SystemUI ---
 
     static void installSystemUi(ClassLoader cl) {
-        installFrameSwap();
         Class<?> handle = XposedHelpers.findClass(HANDLE, cl);
         XposedBridge.hookAllConstructors(handle, new XC_MethodHook() {
             @Override
@@ -65,89 +62,46 @@ final class NavBarHook {
                 reportLoaded(v.getContext());
             }
         });
-        // LG draws the pill from its own size fields (mHandleWidth / mHandleMaxWidth /
-        // mHandleHeight / mRadius): scale those just before each draw and let LG's onDraw
-        // place and color it as usual. Originals are kept, so turning the option off restores.
+        // LG also uses this view from input-monitor threads. Never put scaled sizes or a
+        // clamped mDy into the view, even temporarily: drawing must not change gesture state.
         XposedHelpers.findAndHookMethod(handle, "onDraw", Canvas.class, new XC_MethodHook() {
             @Override
             protected void beforeHookedMethod(MethodHookParam param) {
                 View v = (View) param.thisObject;
-                // LG centers the pill mFullgestureNavHeight/2 above the bottom. With the shorter
-                // bar (keyboard strip option) that is above the window: the pill vanished.
-                // Center it in the bar it actually has.
-                try {
-                    Object full = XposedHelpers.getAdditionalInstanceField(v, "gdj_full");
-                    int now = XposedHelpers.getIntField(v, "mFullgestureNavHeight");
-                    if (!(full instanceof Integer) || (now != (Integer) full && now != v.getHeight())) {
-                        full = now;
-                        XposedHelpers.setAdditionalInstanceField(v, "gdj_full", now);
-                    }
-                    int stock = (Integer) full;
-                    boolean shortBar = imeStripOff() && v.getHeight() > 0 && v.getHeight() < stock;
-                    int fullNow = shortBar ? v.getHeight() : stock;
-                    XposedHelpers.setIntField(v, "mFullgestureNavHeight", fullNow);
-                    // The pill rises with the swipe (mDy) up to half a bar above the window's
-                    // top: in the short bar it vanished as soon as the finger left it. Kept
-                    // inside the window instead (LG's own count is put back after the draw).
-                    float dy = XposedHelpers.getFloatField(v, "mDy");
-                    int h = v.getHeight();
-                    // Both options off: LG's pill exactly as stock.
-                    if (dy != 0 && h > 0 && (shortBar || slimPill(v.getContext()))) {
-                        float hh = slimPill(v.getContext()) ? stockOf(v, "mHandleHeight") * THICKNESS
-                                : stockOf(v, "mHandleHeight");
-                        float center = h - fullNow / 2f; // the pill's resting middle
-                        float up = Math.max(0f, center - hh / 2f);       // room to the top
-                        float down = Math.max(0f, h - center - hh / 2f); // room to the bottom
-                        float kept = Math.max(-down, Math.min(up, dy));
-                        if (kept != dy) {
-                            param.setObjectExtra("gdj_dy", dy);
-                            XposedHelpers.setFloatField(v, "mDy", kept);
-                        }
-                    }
-                } catch (Throwable ignored) {
-                    ModuleLog.w(ignored);
-                }
                 boolean slim = slimPill(v.getContext());
-                for (String f : SIZE_FIELDS) {
-                    try {
-                        Object orig = XposedHelpers.getAdditionalInstanceField(v, "gdj_" + f);
-                        float now = XposedHelpers.getFloatField(v, f);
-                        float scaled = orig instanceof Float ? (Float) orig * (f.equals("mHandleHeight")
-                                || f.equals("mRadius") ? THICKNESS : WIDTH) : Float.NaN;
-                        // Remember the stock value (again whenever LG reset it to a new one).
-                        if (!(orig instanceof Float) || (now != (Float) orig && now != scaled)) {
-                            orig = now;
-                            XposedHelpers.setAdditionalInstanceField(v, "gdj_" + f, now);
-                        }
-                        float base = (Float) orig;
-                        float factor = f.equals("mHandleHeight") || f.equals("mRadius") ? THICKNESS : WIDTH;
-                        XposedHelpers.setFloatField(v, f, slim ? base * factor : base);
-                    } catch (Throwable ignored) {
-                        ModuleLog.w(ignored);
-                        // Field not on this build: that dimension stays stock.
-                    }
+                int h = v.getHeight();
+                if (h <= 0) return;
+                try {
+                    int full = XposedHelpers.getIntField(v, "mFullgestureNavHeight");
+                    boolean shortBar = imeStripOff() && h < full;
+                    if (!slim && !shortBar) return;
+                    float dy = XposedHelpers.getFloatField(v, "mDy");
+                    float pillHeight = XposedHelpers.getFloatField(v, "mHandleHeight");
+                    // LG's resting center is full/2 above the bottom, then rises by mDy.
+                    // Keep the visible pill in a shortened keyboard bar, using a canvas
+                    // translation instead of changing either of LG's motion/height fields.
+                    float originalCenter = h - full / 2f - dy;
+                    float half = Math.min(h / 2f, pillHeight * (slim ? THICKNESS : 1f) / 2f);
+                    float center = h - (shortBar ? h : full) / 2f - dy;
+                    center = Math.max(half, Math.min(h - half, center));
+                    Canvas canvas = (Canvas) param.args[0];
+                    int saved = canvas.save();
+                    param.setObjectExtra("gdj_canvas_save", saved);
+                    canvas.translate(0f, center - originalCenter);
+                    if (slim) canvas.scale(WIDTH, THICKNESS, v.getWidth() / 2f, originalCenter);
+                } catch (Throwable t) {
+                    ModuleLog.w(t);
                 }
             }
 
             @Override
             protected void afterHookedMethod(MethodHookParam param) {
-                Object dy = param.getObjectExtra("gdj_dy");
-                if (!(dy instanceof Float)) return;
-                try {
-                    XposedHelpers.setFloatField(param.thisObject, "mDy", (Float) dy); // LG's own count
-                } catch (Throwable ignored) {
-                    ModuleLog.w(ignored);
+                Object saved = param.getObjectExtra("gdj_canvas_save");
+                if (saved instanceof Integer) {
+                    ((Canvas) param.args[0]).restoreToCount((Integer) saved);
                 }
             }
         });
-    }
-
-    private static final String[] SIZE_FIELDS = {"mHandleWidth", "mHandleMaxWidth", "mHandleHeight", "mRadius"};
-
-    // A size field's stock value (remembered before slimming), or its current one.
-    private static float stockOf(View v, String field) {
-        Object orig = XposedHelpers.getAdditionalInstanceField(v, "gdj_" + field);
-        return orig instanceof Float ? (Float) orig : XposedHelpers.getFloatField(v, field);
     }
 
     // Tells the app "the SystemUI hook is loaded this boot" (the app warns when it isn't).
@@ -173,6 +127,7 @@ final class NavBarHook {
     // hide the frame: no strip, no buttons, keys down to the gesture area. Back still closes
     // the keyboard.
     static void installIme() {
+        if (android.os.Build.VERSION.SDK_INT < 29) return;
         Class<?> impl;
         try {
             impl = Class.forName("android.inputmethodservice.NavigationBarController$Impl");
@@ -183,7 +138,9 @@ final class NavBarHook {
         XposedBridge.hookAllMethods(impl, "getSystemInsets", new XC_MethodHook() {
             @Override
             protected void beforeHookedMethod(MethodHookParam param) {
-                if (imeStripOff()) param.setResult(android.graphics.Insets.NONE);
+                if (android.os.Build.VERSION.SDK_INT >= 29 && imeStripOff()) {
+                    param.setResult(android.graphics.Insets.NONE);
+                }
             }
         });
         XC_MethodHook hideFrame = new XC_MethodHook() {
@@ -201,30 +158,6 @@ final class NavBarHook {
         XposedBridge.hookAllMethods(impl, "installNavigationBarFrameIfNecessary", hideFrame);
         XposedBridge.hookAllMethods(impl, "onViewInitialized", hideFrame);
         XposedBridge.hookAllMethods(impl, "onWindowShown", hideFrame);
-    }
-
-    // SystemUI: the bar's frame (what the keyboard sits on) = the gesture bar's own height.
-    private static void installFrameSwap() {
-        Resources sys = Resources.getSystem();
-        final int frame = sys.getIdentifier("navigation_bar_frame_height", "dimen", "android");
-        final int frameLand = sys.getIdentifier("navigation_bar_frame_height_landscape", "dimen", "android");
-        final int bar = sys.getIdentifier("navigation_bar_height", "dimen", "android");
-        if (frame == 0 || bar == 0) return;
-        XC_MethodHook swap = new XC_MethodHook() {
-            @Override
-            protected void beforeHookedMethod(MethodHookParam param) {
-                int id = (Integer) param.args[0];
-                if (id != frame && (frameLand == 0 || id != frameLand)) return;
-                if (imeStripOff()) param.args[0] = bar;
-            }
-        };
-        for (String name : new String[]{"getDimensionPixelSize", "getDimensionPixelOffset", "getDimension"}) {
-            try {
-                XposedHelpers.findAndHookMethod(Resources.class, name, int.class, swap);
-            } catch (Throwable ignored) {
-                ModuleLog.w(ignored);
-            }
-        }
     }
 
     // --- Settings ---
