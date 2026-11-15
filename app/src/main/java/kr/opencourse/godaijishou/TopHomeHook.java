@@ -354,6 +354,14 @@ final class TopHomeHook {
                 Object name = XposedHelpers.getObjectField(icon, "mFolderName");
                 stack((android.view.View) preview, false);
                 stack((android.view.View) name, true);
+                // The name keeps the side-by-side layout's start alignment and padding: it sat
+                // left of the folder icon. Centered under it like an app's label.
+                if (name instanceof android.widget.TextView) {
+                    android.widget.TextView t = (android.widget.TextView) name;
+                    XposedHelpers.setBooleanField(t, "mLayoutHorizontal", false);
+                    t.setGravity(android.view.Gravity.TOP | android.view.Gravity.CENTER_HORIZONTAL);
+                    t.setPaddingRelative(0, t.getPaddingTop(), 0, t.getPaddingBottom());
+                }
             }
         });
     }
