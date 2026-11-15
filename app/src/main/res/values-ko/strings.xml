@@ -38,18 +38,18 @@
     <string name="status_inactive">LSPosed에서 켜고 재부팅</string>
     <string name="group_screen">화면</string>
     <string name="mode_second">세컨드 스크린</string>
-    <string name="mode_original">메인 화면</string>
-    <string name="mode_original_sub">하단을 순정 메인 화면으로</string>
+    <string name="mode_original">메인 스크린</string>
+    <string name="mode_original_sub">하단을 순정 메인 스크린으로</string>
     <string name="mode_second_sub">하단 화면을 따로 활용</string>
     <string name="mode_apply">적용하기</string>
     <string name="mode_apply_hint">%1$s 옵션을 보고 있어요. 적용하기 전까지는 %2$s 사용 중입니다.</string>
-    <string name="mode_escaped_hint">비상탈출로 세컨드 스크린에 있어요. 볼륨 위+아래를 누르거나 적용하면 메인 화면으로 돌아갑니다.</string>
+    <string name="mode_escaped_hint">비상탈출로 세컨드 스크린에 있어요. 볼륨 위+아래를 누르거나 적용하면 메인 스크린으로 돌아갑니다.</string>
     <string name="mode_fallback_hint">LSPosed 범위에 시스템 UI와 LG 홈이 필요해요. 적용되기 전까지는 세컨드 스크린으로 동작합니다(재부팅 필요).</string>
-    <string name="main_confirm_title">이 화면을 메인 화면으로 쓸까요?</string>
+    <string name="main_confirm_title">이 화면을 메인 스크린으로 쓸까요?</string>
     <string name="main_confirm_keep">유지</string>
     <string name="main_confirm_count">%d초 뒤 원래대로 돌아갑니다</string>
-    <string name="mode_original_title">메인 화면</string>
-    <string name="mode_original_desc">하단 화면이 진짜 메인 화면이 됩니다. 잠금을 풀면 상태바·알림창·홈·밝기·모든 앱이 하단에서 그대로 동작합니다. 처음 적용하면 20초 안에 [유지]를 눌러야 하고, 볼륨 위+아래를 짧게 누르면 메인 ↔ 세컨드가 바뀌고, 볼륨 아래만 10초 누르면 비상탈출합니다. LSPosed 범위에 시스템 UI와 LG 홈이 필요합니다.</string>
+    <string name="mode_original_title">메인 스크린</string>
+    <string name="mode_original_desc">하단 화면이 진짜 메인 스크린이 됩니다. 잠금을 풀면 상태바·알림창·홈·밝기·모든 앱이 하단에서 그대로 동작합니다. 처음 적용하면 20초 안에 [유지]를 눌러야 하고, 볼륨 위+아래를 짧게 누르면 메인 ↔ 세컨드가 바뀌고, 볼륨 아래만 10초 누르면 비상탈출합니다. LSPosed 범위에 시스템 UI와 LG 홈이 필요합니다.</string>
     <string name="group_common">공통</string>
     <string name="group_module">모듈</string>
     <string name="row_launcher_title">세컨드 스크린 홈</string>
@@ -108,7 +108,7 @@
     <string name="scope_dialog_title">LSPosed 설정이 필요해요</string>
     <string name="scope_dialog_message">이 기능은 LSPosed에서 Wing Custom 모듈의 범위에 다음을 체크하고 재부팅해야 작동합니다.\n\n%1$s</string>
     <string name="scope_dialog_open">LSPosed 열기</string>
-    <string name="main_scope_dialog_message">메인 화면 모드는 아래 범위가 모두 체크되고 재부팅된 뒤에만 켤 수 있어요. LSPosed에서 \"권장 항목 선택\" 후 재부팅하세요.
+    <string name="main_scope_dialog_message">메인 스크린 모드는 아래 범위가 모두 체크되고 재부팅된 뒤에만 켤 수 있어요. LSPosed에서 \"권장 항목 선택\" 후 재부팅하세요.
 
 %1$s</string>
     <string name="scope_name_system">시스템 프레임워크 (android)</string>

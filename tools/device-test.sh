@@ -7,6 +7,7 @@
 #
 # Checks per switch (B = the bottom panel's logical display: 0 swapped, 4 not):
 #   layout     bottom panel touch viewport is on B and active
+#   wm size    the window manager draws B at the panel's 1080x1240
 #   watcher    LG home's gesture watcher (home / recents) is on B
 #   home       an app on B, swipe up from the bottom edge -> home on B
 #   back       a settings page on B, swipe in from the left edge -> leaves the page
@@ -80,6 +81,13 @@ check_round() {
 
     # layout
     if [ "$b" = "$expect" ] && viewport_active "$b"; then ok layout; else bad "layout: bottom on '${b}', expected $expect"; return; fi
+
+    # wm size: what the window manager draws the bottom panel at
+    local cur
+    cur=$(sh dumpsys window displays | awk -v d="Display: mDisplayId=$b " '
+        index($0, d) > 0 { on = 1; next }
+        on && /cur=/ { sub(/.*cur=/, ""); sub(/ .*/, ""); print; exit }')
+    if [ "$cur" = "1080x1240" ]; then ok "wm size"; else bad "wm size: display $b drawn at $cur, panel is 1080x1240"; fi
 
     # watcher
     l3=$(pid_of com.lge.launcher3)

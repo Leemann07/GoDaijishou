@@ -61,7 +61,10 @@ final class SafetyEscape {
     }
 
     private static final Runnable EMERGENCY = () -> {
-        if (downDown && !upDown) MainScreen.escape();
+        if (downDown && !upDown) {
+            MainScreen.escape();
+            MainScreen.announce(AppPreferences.SCREEN_MODE_SECOND);
+        }
     };
 
     private static void post(Runnable r) {
