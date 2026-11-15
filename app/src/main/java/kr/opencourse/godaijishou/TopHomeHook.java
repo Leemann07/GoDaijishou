@@ -66,6 +66,8 @@ final class TopHomeHook {
         });
         installGridOnce(cl);
         installSecondScreenGestures(cl);
+        safely(() -> installLabelsBelow(cl));
+        safely(() -> installFreshLayout(cl));
         for (String name : new String[] {POSTURE, DISPLAY_HELPER}) {
             Class<?> c = XposedHelpers.findClassIfExists(name, cl);
             if (c == null) continue;
@@ -141,6 +143,210 @@ final class TopHomeHook {
                 }
             }
         });
+    }
+
+    private static void safely(Runnable r) {
+        try {
+            r.run();
+        } catch (Throwable t) {
+            ModuleLog.w(t);
+        }
+    }
+
+    // --- Labels under the icons in landscape ---
+
+    private static final String PKG = "com.lge.launcher3";
+
+    /**
+     * On the Wing (swivel home feature) LG's home puts each label beside its icon in landscape,
+     * in cells sized for that: on the second screen's panel as the main display every name
+     * wrapped into two short lines. Landscape is laid out like portrait here: labels under the
+     * icons and cells sized for icon + label. Only the home's own icons (workspace, dock,
+     * folders, app drawer); the long-press menus keep their side-by-side rows.
+     */
+    private static void installLabelsBelow(ClassLoader cl) {
+        Class<?> profile = XposedHelpers.findClass("com.android.launcher3.DeviceProfile", cl);
+        // Read in the constructor (updateIconSize: cell and text sizes) and later (padding).
+        XC_MethodHook portraitCells = new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                XposedHelpers.setBooleanField(param.thisObject, "cellLayoutHorizontal", false);
+            }
+
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                XposedHelpers.setBooleanField(param.thisObject, "cellLayoutHorizontal", false);
+            }
+        };
+        XposedBridge.hookAllMethods(profile, "updateIconSize", portraitCells);
+        XposedBridge.hookAllConstructors(profile, portraitCells);
+        // Portrait-style cells let the dock icons grow past the landscape dock's height (cut
+        // off at the bottom). The dock draws its icons at hotseatIconSizePx / iconSizePx; kept
+        // to what the dock can show. Home screen icons keep their size.
+        XC_MethodHook dockFits = new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                Object p = param.thisObject;
+                if (!XposedHelpers.getBooleanField(p, "isLandscape")) return;
+                int bar = XposedHelpers.getIntField(p, "hotseatBarHeightPx");
+                int dock = XposedHelpers.getIntField(p, "hotseatIconSizePx");
+                int max = Math.round(bar * 0.8f);
+                if (bar <= 0 || dock <= max) return;
+                XposedHelpers.setIntField(p, "hotseatIconSizePx", max);
+                XposedHelpers.setIntField(p, "hotseatCellWidthPx", max);
+                XposedHelpers.setIntField(p, "hotseatCellHeightPx", max);
+            }
+        };
+        XposedBridge.hookAllMethods(profile, "updateIconSize", dockFits);
+        // LG's profile sets the dock icon size again after the base constructor.
+        Class<?> lgProfile = XposedHelpers.findClassIfExists("com.lge.launcher3.profile.LGDeviceProfile", cl);
+        if (lgProfile != null) XposedBridge.hookAllConstructors(lgProfile, dockFits);
+        // The dock's app drawer button: icon beside the words in landscape; icon only, as in
+        // portrait, like the rest of the dock.
+        Class<?> hotseat = XposedHelpers.findClassIfExists("com.android.launcher3.Hotseat", cl);
+        if (hotseat != null) {
+            XposedBridge.hookAllMethods(hotseat, "addAllAppsButton", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    Object launcher = XposedHelpers.getObjectField(param.thisObject, "mLauncher");
+                    Object b = XposedHelpers.callMethod(launcher, "getAllAppsButton");
+                    if (!(b instanceof android.widget.TextView)) return;
+                    android.widget.TextView t = (android.widget.TextView) b;
+                    android.graphics.drawable.Drawable[] ds = t.getCompoundDrawables();
+                    android.graphics.drawable.Drawable icon = ds[0] != null ? ds[0] : ds[2];
+                    if (icon == null) return;
+                    t.setCompoundDrawables(null, icon, null, null);
+                    t.setText(null);
+                    t.setGravity(android.view.Gravity.TOP | android.view.Gravity.CENTER_HORIZONTAL);
+                }
+            });
+        }
+
+        Class<?> bubble = XposedHelpers.findClass("com.android.launcher3.BubbleTextView", cl);
+        XposedBridge.hookAllConstructors(bubble, new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                android.widget.TextView v = (android.widget.TextView) param.thisObject;
+                if (!XposedHelpers.getBooleanField(v, "mLayoutHorizontal")) return;
+                if (param.args.length < 2 || !(param.args[1] instanceof android.util.AttributeSet)) return;
+                if (!isHomeIconStyle(v.getContext(), ((android.util.AttributeSet) param.args[1]).getStyleAttribute())) return;
+                XposedHelpers.setBooleanField(v, "mLayoutHorizontal", false);
+                v.setGravity(android.view.Gravity.TOP | android.view.Gravity.CENTER_HORIZONTAL);
+                v.setPaddingRelative(v.getPaddingEnd(), v.getPaddingTop(), v.getPaddingEnd(), v.getPaddingBottom());
+            }
+        });
+
+        Class<?> folder = XposedHelpers.findClassIfExists("com.android.launcher3.folder.FolderIcon", cl);
+        if (folder == null) return;
+        XposedBridge.hookAllConstructors(folder, new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                XposedHelpers.setBooleanField(param.thisObject, "mLayoutHorizontal", false);
+            }
+        });
+        // The landscape folder layout places preview and name side by side; stack them.
+        XposedBridge.hookAllMethods(folder, "fromXml", new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                Object icon = param.getResult();
+                if (!(icon instanceof android.view.ViewGroup)) return;
+                android.view.ViewGroup g = (android.view.ViewGroup) icon;
+                g.setPaddingRelative(0, g.getPaddingTop(), 0, g.getPaddingBottom());
+                android.view.ViewGroup.LayoutParams own = g.getLayoutParams();
+                if (own instanceof android.view.ViewGroup.MarginLayoutParams) {
+                    ((android.view.ViewGroup.MarginLayoutParams) own).setMarginStart(0);
+                }
+                Object preview = XposedHelpers.getObjectField(icon, "mPreviewBackground");
+                Object name = XposedHelpers.getObjectField(icon, "mFolderName");
+                stack((android.view.View) preview, false);
+                stack((android.view.View) name, true);
+            }
+        });
+    }
+
+    private static void stack(android.view.View v, boolean fill) {
+        if (v == null || !(v.getLayoutParams() instanceof android.widget.FrameLayout.LayoutParams)) return;
+        android.widget.FrameLayout.LayoutParams lp = (android.widget.FrameLayout.LayoutParams) v.getLayoutParams();
+        lp.gravity = android.view.Gravity.TOP | android.view.Gravity.CENTER_HORIZONTAL;
+        lp.leftMargin = 0;
+        lp.rightMargin = 0;
+        if (fill) lp.width = android.view.ViewGroup.LayoutParams.MATCH_PARENT;
+        v.setLayoutParams(lp);
+    }
+
+    private static int iconStyle, folderIconStyle;
+
+    // The home's icons use @style/Icon (folders: Icon.Folder); popup rows use other styles.
+    private static boolean isHomeIconStyle(Context c, int style) {
+        if (style == 0) return false;
+        if (iconStyle == 0) {
+            android.content.res.Resources r = c.getResources();
+            iconStyle = r.getIdentifier("Icon", "style", PKG);
+            folderIconStyle = r.getIdentifier("Icon.Folder", "style", PKG);
+        }
+        return style == iconStyle || style == folderIconStyle;
+    }
+
+    // --- Fresh layout after the main display changed ---
+
+    private static int startShort, startLong, startDpi;
+    private static long startedAt;
+
+    /**
+     * LG's home keeps the grid it computed for the display it started on. When main screen mode
+     * changes the main display (another panel, size and density), the home came back with that
+     * old grid: names cut off, the edit bar squeezed letter by letter. When the home is shown
+     * again on a main display unlike the one it started on, it restarts once and lays itself
+     * out for the display it is on. Nothing happens while it stays hidden (lock screen), so a
+     * lock and unlock that ends where it began costs nothing.
+     */
+    private static void installFreshLayout(ClassLoader cl) {
+        Class<?> launcher = XposedHelpers.findClassIfExists("com.android.launcher3.Launcher", cl);
+        if (launcher == null) return;
+        XposedBridge.hookAllMethods(launcher, "onCreate", new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                if (startedAt != 0) return;
+                int[] m = mainDisplay((Context) param.thisObject);
+                if (m == null) return;
+                startShort = m[0];
+                startLong = m[1];
+                startDpi = m[2];
+                startedAt = android.os.SystemClock.elapsedRealtime();
+            }
+        });
+        XposedBridge.hookAllMethods(launcher, "onResume", new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                if (startedAt == 0) return;
+                int[] m = mainDisplay((Context) param.thisObject);
+                if (m == null || (m[0] == startShort && m[1] == startLong && m[2] == startDpi)) return;
+                if (android.os.SystemClock.elapsedRealtime() - startedAt < 3000) {
+                    // Just started and the display moved meanwhile: take it as the start.
+                    startShort = m[0];
+                    startLong = m[1];
+                    startDpi = m[2];
+                    return;
+                }
+                android.os.Process.killProcess(android.os.Process.myPid());
+            }
+        });
+    }
+
+    // {short side, long side, density} of the main display; rotation does not count.
+    private static int[] mainDisplay(Context c) {
+        try {
+            android.hardware.display.DisplayManager dm = c.getSystemService(android.hardware.display.DisplayManager.class);
+            android.view.Display d = dm.getDisplay(android.view.Display.DEFAULT_DISPLAY);
+            if (d == null) return null;
+            android.util.DisplayMetrics out = new android.util.DisplayMetrics();
+            d.getRealMetrics(out);
+            return new int[] {Math.min(out.widthPixels, out.heightPixels),
+                    Math.max(out.widthPixels, out.heightPixels), out.densityDpi};
+        } catch (Throwable t) {
+            ModuleLog.w(t);
+            return null;
+        }
     }
 
     // --- Home grid 4x4, once ---

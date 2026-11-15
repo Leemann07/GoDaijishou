@@ -47,6 +47,15 @@ final class SwivelFold {
     }
 
     static void install(ClassLoader cl) {
+        // Latch at process start, not at the first swivel question: LG restarts the camera in
+        // the background (BoostService) on the lock screen, unswapped, and builds parts from
+        // that state before asking. Unlocking swapped again; that process must end too.
+        XposedBridge.hookAllMethods(Application.class, "onCreate", new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                observe();
+            }
+        });
         // The camera also builds swivel-only parts (its drum UI, sized from the second screen)
         // just for being a swivel model: while folded it is not one, so none are built.
         Class<?> model = XposedHelpers.findClassIfExists("com.lge.camera.constants.ModelProperties", cl);
