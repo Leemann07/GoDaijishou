@@ -43,7 +43,7 @@ jobs:
       - name: Build
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon :app:assembleRelease
+          ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleRelease
           cp app/build/outputs/apk/release/app-release.apk "WingCustom-${TAG}.apk"
 
       # Notes: the tag's annotation if it has one, else GitHub's generated notes.

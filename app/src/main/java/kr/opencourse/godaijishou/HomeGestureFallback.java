@@ -1,15 +1,23 @@
 package kr.opencourse.godaijishou;
 
-import android.app.ActivityManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
+import android.graphics.Point;
+import android.os.PowerManager;
 import android.os.SystemClock;
+import android.util.DisplayMetrics;
+import android.view.Display;
+import android.view.InputDevice;
 import android.view.InputEvent;
+import android.view.KeyCharacterMap;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
+import android.view.VelocityTracker;
 import android.view.View;
+import android.view.ViewConfiguration;
+import android.view.WindowInsets;
 
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
@@ -19,41 +27,24 @@ import de.robv.android.xposed.XposedHelpers;
  * Gesture navigation whatever the home app is (scope: com.android.systemui).
  *
  * LG runs the action of a swipe-up in the home app: LG's own home plays it, a
- * third-party home (Nova, a game front-end, anything) does not, and with one set the
- * pill rises to nothing. So while the default home is not LG's, the pill's own swipe
- * watcher finishes the gesture here: a fling up injects HOME, a slow drag held up
- * injects APP_SWITCH (recents). With LG's home default this stays out of the way
- * entirely; the lock screen and the home screen itself keep their own swipes.
- *
- * The NavigationHandle watcher that animates the pill already decides what looks like
- * a bottom swipe, so this rides on its verdict (the pill must have risen): no second
- * detection to disagree with the system.
+ * third-party home can leave the pill rising without completing home/recents. For those
+ * launchers we finish bottom-edge swipes, without changing LG's drawing or motion fields.
+ * LG's own home keeps its original handler. Locked gestures are never completed here.
+ * A held bottom-edge swipe can open recents on a third-party home as well as in an app.
  */
 final class HomeGestureFallback {
     private static final String GESTURAL = "com.android.systemui.navigationbar.gestural.";
     private static final String RECEIVER = GESTURAL + "NavigationHandle$SysUiInputEventReceiver";
-    private static final String LG_HOME = "com.lge.launcher3";
 
-    // The swipe must travel at least this part of the gesture bar (the pill's own rise).
-    private static final float RISE_FRACTION = 0.6f;
-    // A fling faster than this (px per ms upward) is HOME; slower than half of it, held
-    // at the top for a beat, is RECENTS.
-    private static final float FLING_DP_PER_MS = 0.35f;
-    private static final long HOLD_MS = 200;
-
-    // LG keeps several pill watchers per display, each seeing every touch: the first to
-    // see a gesture's down owns it (the others only let it go by), so the action fires once.
+    private static final float START_ZONE_DP = 24f;
+    private static final float FLING_DP_PER_SECOND = 350f;
     private static final Object lock = new Object();
-    private static Object owner;
-    private static long ownerDownTime = -1;
+    private static final HomeGestureTracker tracker = new HomeGestureTracker();
+    private static VelocityTracker velocity;
+    private static int gestureWidth, gestureHeight, gestureRotation;
+    private static float gestureDensity;
 
-    // The gesture being watched.
-    private static float lastY, maxY;
-    private static long lastMoveAt, heldSince = -1;
-
-    // The resolved home package ("?" until read): only LG's own runs the gesture itself.
-    private static volatile String homePkg = "?";
-    private static volatile long homeResolvedAt;
+    private static String gestureHome;
 
     private HomeGestureFallback() {
     }
@@ -66,6 +57,15 @@ final class HomeGestureFallback {
                 try {
                     watch(param.thisObject, (InputEvent) param.args[0]);
                 } catch (Throwable t) {
+                    synchronized (lock) {
+                        if (param.args[0] instanceof MotionEvent) {
+                            MotionEvent ev = (MotionEvent) param.args[0];
+                            if (tracker.owns(param.thisObject, ev.getDownTime(), ev.getDeviceId())) {
+                                tracker.cancel(param.thisObject, ev.getDownTime(), ev.getDeviceId());
+                                recycleVelocity();
+                            }
+                        }
+                    }
                     ModuleLog.w(t); // never take the system's input down with us
                 }
             }
@@ -79,176 +79,187 @@ final class HomeGestureFallback {
         View handle = (View) XposedHelpers.getObjectField(receiver, "this$0");
         Context context = handle.getContext();
         if (!onMainDisplay(context)) return;
-        int action = ev.getActionMasked();
-        if (action == MotionEvent.ACTION_DOWN) {
-            synchronized (lock) {
-                if (ownerDownTime == ev.getDownTime()) return; // another watcher owns it
-                ownerDownTime = ev.getDownTime();
-                owner = receiver;
-                lastY = ev.getY();
-                maxY = 0;
-                lastMoveAt = ev.getEventTime();
-                heldSince = -1;
-            }
-            return;
-        }
-        if (action == MotionEvent.ACTION_CANCEL
-                || action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_POINTER_UP) {
-            boolean complete;
-            synchronized (lock) {
-                complete = receiver == owner;
-                if (action != MotionEvent.ACTION_CANCEL || complete) {
-                    owner = null;
-                    ownerDownTime = -1;
-                }
-            }
-            if (complete && action == MotionEvent.ACTION_UP && ev.getPointerCount() <= 1) {
-                finished(handle, context, ev);
-            }
-            return;
-        }
-        if (action != MotionEvent.ACTION_MOVE) return;
+        HomeGestureTracker.Result result = HomeGestureTracker.Result.NONE;
+        String expectedHome;
         synchronized (lock) {
-            if (receiver != owner) return;
-            if (ev.getPointerCount() > 1) { // two fingers: not a system gesture
-                owner = null;
-                ownerDownTime = -1;
+            int action = ev.getActionMasked();
+            long down = ev.getDownTime();
+            int device = ev.getDeviceId();
+            if (!ev.isFromSource(InputDevice.SOURCE_TOUCHSCREEN)
+                    || ev.getToolType(0) != MotionEvent.TOOL_TYPE_FINGER
+                    || (android.os.Build.VERSION.SDK_INT >= 33
+                        && (ev.getFlags() & MotionEvent.FLAG_CANCELED) != 0)) {
+                if (tracker.owns(receiver, down, device)) {
+                    tracker.cancel(receiver, down, device);
+                    recycleVelocity();
+                }
                 return;
             }
-            lastY = ev.getY();
-            lastMoveAt = ev.getEventTime();
-            float dy = rise(handle);
-            if (dy > maxY) {
-                // Held near the top of its travel, waiting: the recents pose.
-                if (dy >= riseLimit(handle) * RISE_FRACTION && heldSince < 0) heldSince = ev.getEventTime();
-                maxY = dy;
+            if (action == MotionEvent.ACTION_DOWN) {
+                Display display = handle.getDisplay();
+                if (display == null) return;
+                // The view's resources can still describe the previous panel after a swap.
+                DisplayMetrics metrics = new DisplayMetrics();
+                display.getRealMetrics(metrics);
+                Point size = new Point(metrics.widthPixels, metrics.heightPixels);
+                float density = metrics.density;
+                float zone = START_ZONE_DP * density;
+                WindowInsets insets = handle.getRootWindowInsets();
+                if (android.os.Build.VERSION.SDK_INT >= 29 && insets != null) {
+                    zone = Math.max(zone, Math.min(48f * density,
+                            insets.getMandatorySystemGestureInsets().bottom));
+                }
+                float slop = ViewConfiguration.get(context).getScaledTouchSlop();
+                float resourceDensity = handle.getResources().getDisplayMetrics().density;
+                if (resourceDensity > 0) slop *= density / resourceDensity;
+                float rise = Math.max(2f * slop, Math.min(72f * density,
+                        Math.min(size.x, size.y) * 0.12f));
+                if (!tracker.start(receiver, down, device, ev.getX(), ev.getY(),
+                        size.x, size.y, zone, rise, slop, FLING_DP_PER_SECOND * density)) return;
+                recycleVelocity();
+                if (!tracker.owns(receiver, down, device)) return;
+                gestureHome = eligibleHome(context);
+                if (ev.getPointerCount() != 1 || gestureHome == null) {
+                    tracker.cancel(receiver, down, device);
+                    return;
+                }
+                gestureWidth = size.x;
+                gestureHeight = size.y;
+                gestureRotation = display.getRotation();
+                gestureDensity = density;
+                velocity = VelocityTracker.obtain();
+                velocity.addMovement(ev);
+                return;
             }
+            // A peer's UP/CANCEL must never clear the owner's state, nor may an old stream
+            // finish a newer one. Keep recognition and velocity access under the same lock.
+            if (!tracker.owns(receiver, down, device)) return;
+            if (action == MotionEvent.ACTION_CANCEL || action == MotionEvent.ACTION_POINTER_DOWN
+                    || action == MotionEvent.ACTION_POINTER_UP || ev.getPointerCount() != 1) {
+                tracker.cancel(receiver, down, device);
+                recycleVelocity();
+                return;
+            }
+            if (action != MotionEvent.ACTION_MOVE && action != MotionEvent.ACTION_UP) return;
+            if (!tracker.accepts(receiver, down, device, ev.getEventTime())) return;
+            velocity.addMovement(ev);
+            for (int i = 0; i < ev.getHistorySize(); i++) {
+                tracker.move(receiver, down, device, ev.getHistoricalX(i), ev.getHistoricalY(i),
+                        ev.getHistoricalEventTime(i));
+            }
+            if (!tracker.owns(receiver, down, device)) {
+                recycleVelocity();
+                return;
+            }
+            if (action == MotionEvent.ACTION_MOVE) {
+                if (!tracker.move(receiver, down, device, ev.getX(), ev.getY(), ev.getEventTime())) {
+                    recycleVelocity();
+                }
+                return;
+            }
+            try {
+                Display display = handle.getDisplay();
+                DisplayMetrics metrics = new DisplayMetrics();
+                if (display != null) display.getRealMetrics(metrics);
+                if (display == null || display.getRotation() != gestureRotation
+                        || metrics.widthPixels != gestureWidth || metrics.heightPixels != gestureHeight
+                        || metrics.density != gestureDensity) {
+                    tracker.cancel(receiver, down, device); // rotation/panel switch during a swipe
+                    return;
+                }
+                velocity.computeCurrentVelocity(1000);
+                float speed = -velocity.getYVelocity(ev.getPointerId(0));
+                result = tracker.finish(receiver, down, device, ev.getX(), ev.getY(), ev.getEventTime(), speed);
+                expectedHome = gestureHome;
+            } finally {
+                recycleVelocity();
+            }
+        }
+        if (result == HomeGestureTracker.Result.NONE) return;
+        String home = eligibleHome(context); // fresh state: no stale launcher/keyguard cache
+        if (home == null || !home.equals(expectedHome)) {
+            trace("suppressed at finish: environment changed");
+            return;
+        }
+        synchronized (lock) {
+            // Resolving policy can cross a newer DOWN on a different monitor thread.
+            if (!tracker.isLatest(ev.getDownTime(), ev.getDeviceId())) return;
+            int code = result == HomeGestureTracker.Result.HOME
+                    ? KeyEvent.KEYCODE_HOME : KeyEvent.KEYCODE_APP_SWITCH;
+            trace("inject " + result + " accepted=" + inject(code));
         }
     }
 
-    private static void finished(View handle, Context context, MotionEvent up) {
-        float dy = rise(handle);
-        float limit = riseLimit(handle);
-        if (dy < limit * RISE_FRACTION) {
-            trace("short rise: dy=" + dy + " limit=" + limit);
-            return; // the pill never really rose
+    private static void recycleVelocity() {
+        if (velocity != null) {
+            velocity.recycle();
+            velocity = null;
         }
-        String why = enabledWhy(context);
-        if (why != null) {
-            trace("suppressed: " + why + " dy=" + dy);
-            return;
-        }
-        long now = up.getEventTime();
-        long dt = Math.max(1, now - lastMoveAt);
-        float speed = Math.max(0f, lastY - up.getY()) / dt; // px per ms upward at the release
-        boolean fling = speed >= FLING_DP_PER_MS * density(handle);
-        boolean held = heldSince > 0 && now - heldSince >= HOLD_MS;
-        int code = fling || !held ? KeyEvent.KEYCODE_HOME : KeyEvent.KEYCODE_APP_SWITCH;
-        trace("fire " + (code == KeyEvent.KEYCODE_HOME ? "HOME" : "RECENTS")
-                + " dy=" + dy + " speed=" + speed + " held=" + held);
-        inject(code);
     }
 
     private static void trace(String message) {
-        // One line per finished swipe: quiet in the log, and enough to see a dead gesture.
+        // Only edge candidates and completed swipes, so a suppressed gesture is diagnosable.
         android.util.Log.v("GoDaijishouGesture", message);
     }
 
     // --- Is this gesture ours to finish? ---
 
-    /** null: yes; a reason: no. */
-    private static String enabledWhy(Context context) {
-        // LG's own home runs the gesture itself: adding ours would fire twice.
-        String home = homePackage(context);
-        if (LG_HOME.equals(home)) return "LG home";
-        // The lock screen's swipe-up is its unlock, not a home press.
+    // This framework overlay has no public R constant; read its value on every candidate
+    // so switching between gesture/button navigation cannot leave a stale policy enabled.
+    @android.annotation.SuppressLint("DiscouragedApi")
+    private static String eligibleHome(Context context) {
         try {
+            int mode = context.getResources().getIdentifier("config_navBarInteractionMode", "integer", "android");
+            boolean gestural = mode != 0 && context.getResources().getInteger(mode) == 2;
             android.app.KeyguardManager km = context.getSystemService(android.app.KeyguardManager.class);
-            if (km != null && km.isKeyguardLocked()) return "keyguard";
-        } catch (Throwable ignored) {
+            PowerManager power = context.getSystemService(PowerManager.class);
+            Intent intent = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME);
+            ResolveInfo resolved = context.getPackageManager().resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY);
+            String home = resolved != null && resolved.activityInfo != null
+                    ? resolved.activityInfo.packageName : null;
+            return HomeGesturePolicy.allows(home, gestural,
+                    km == null ? null : km.isKeyguardLocked(),
+                    power == null ? null : power.isInteractive()) ? home : null;
+        } catch (Throwable t) {
+            ModuleLog.w(t);
+            return null;
         }
-        // On the home screen the launcher's own swipe comes first (Nova opens its drawer).
-        Boolean onHome = onHome(context);
-        if (onHome != null && onHome) return "on home";
-        return null;
     }
 
     private static boolean onMainDisplay(Context context) {
         if (context == null) return false;
         try {
-            return (int) XposedHelpers.callMethod(context, "getDisplayId") == android.view.Display.DEFAULT_DISPLAY;
+            return (int) XposedHelpers.callMethod(context, "getDisplayId") == Display.DEFAULT_DISPLAY;
         } catch (Throwable t) {
             return false;
         }
     }
 
-    private static String homePackage(Context context) {
-        String h = homePkg;
-        long now = SystemClock.elapsedRealtime();
-        if ("?".equals(h) || now - homeResolvedAt > 3000) {
-            try {
-                Intent intent = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME);
-                PackageManager pm = context.getPackageManager();
-                ResolveInfo r = pm.resolveActivity(intent, 0);
-                h = r != null && r.activityInfo != null ? r.activityInfo.packageName : "";
-                homePkg = h;
-                homeResolvedAt = now;
-            } catch (Throwable t) {
-                ModuleLog.w(t);
-            }
-        }
-        return h;
-    }
-
-    private static Boolean onHome(Context context) {
-        try {
-            ActivityManager am = context.getSystemService(ActivityManager.class);
-            if (am == null) return null;
-            for (ActivityManager.RunningTaskInfo task : am.getRunningTasks(1)) {
-                Intent base = task.baseIntent;
-                return base != null && base.hasCategory(Intent.CATEGORY_HOME);
-            }
-        } catch (Throwable t) {
-            ModuleLog.w(t);
-        }
-        return null;
-    }
-
-    // --- LG's own pill measurements ---
-
-    private static float rise(View handle) {
-        try {
-            return XposedHelpers.getFloatField(handle, "mDy");
-        } catch (Throwable t) {
-            return 0;
-        }
-    }
-
-    private static float riseLimit(View handle) {
-        try {
-            return XposedHelpers.getIntField(handle, "mFullgestureNavHeight");
-        } catch (Throwable t) {
-            return handle.getHeight() * 2; // unknown firmware: a rough bar and a half
-        }
-    }
-
-    private static float density(View handle) {
-        return handle.getResources().getDisplayMetrics().density;
-    }
-
     // --- The action ---
 
-    private static void inject(int code) {
+    private static boolean inject(int code) {
         try {
             long t = SystemClock.uptimeMillis();
             Object im = XposedHelpers.callStaticMethod(
                     Class.forName("android.hardware.input.InputManager"), "getInstance");
-            KeyEvent down = KeyEvent.changeTimeRepeat(new KeyEvent(KeyEvent.ACTION_DOWN, code), t, 0);
-            KeyEvent up = KeyEvent.changeTimeRepeat(new KeyEvent(KeyEvent.ACTION_UP, code), t + 10, 0);
-            XposedHelpers.callMethod(im, "injectInputEvent", down, 0 /* async */);
-            XposedHelpers.callMethod(im, "injectInputEvent", up, 0 /* async */);
+            KeyEvent down = new KeyEvent(t, t, KeyEvent.ACTION_DOWN, code, 0, 0,
+                    KeyCharacterMap.VIRTUAL_KEYBOARD, 0,
+                    KeyEvent.FLAG_FROM_SYSTEM | KeyEvent.FLAG_VIRTUAL_HARD_KEY, InputDevice.SOURCE_KEYBOARD);
+            KeyEvent up = KeyEvent.changeAction(down, KeyEvent.ACTION_UP);
+            XposedHelpers.callMethod(down, "setDisplayId", Display.DEFAULT_DISPLAY);
+            XposedHelpers.callMethod(up, "setDisplayId", Display.DEFAULT_DISPLAY);
+            boolean pressed;
+            boolean released;
+            try {
+                pressed = Boolean.TRUE.equals(XposedHelpers.callMethod(im, "injectInputEvent", down, 0));
+            } finally {
+                // Try to release even when the press was rejected or threw.
+                released = Boolean.TRUE.equals(XposedHelpers.callMethod(im, "injectInputEvent", up, 0));
+            }
+            return pressed && released;
         } catch (Throwable t) {
             ModuleLog.w(t);
+            return false;
         }
     }
 }
