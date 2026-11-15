@@ -173,6 +173,12 @@ final class TopHomeHook {
         });
     }
 
+    // Translation that centers the dot row 0.8 of its own height above the bar's top edge.
+    private static int dotsAboveBar(android.view.View bar, android.view.View dots) {
+        int center = bar.getTop() - Math.round(dots.getHeight() * 0.8f);
+        return center - (dots.getTop() + dots.getHeight() / 2);
+    }
+
     private static void safely(Runnable r) {
         try {
             r.run();
@@ -286,6 +292,43 @@ final class TopHomeHook {
         if (launcherClass != null) XposedBridge.hookAllMethods(launcherClass, "showOverviewMode", barPadding);
         Class<?> rootView = XposedHelpers.findClassIfExists("com.android.launcher3.LauncherRootView", cl);
         if (rootView != null) XposedBridge.hookAllMethods(rootView, "updateOverViewPanelPadding", barPadding);
+
+        // Edit mode's page dots: in landscape the swivel home lifts them by a fixed amount made
+        // for the top screen, which left them over the button bar's icons. They sit right
+        // above the bar instead, in the gap between the page previews and the bar.
+        Class<?> stateAnim = XposedHelpers.findClassIfExists("com.android.launcher3.WorkspaceStateTransitionAnimation", cl);
+        if (stateAnim != null) {
+            XposedBridge.hookAllMethods(stateAnim, "getPageIndicatorTranslationY", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    if (param.args.length != 1) return;
+                    Object launcher = XposedHelpers.getObjectField(param.thisObject, "mLauncher");
+                    Object profile = XposedHelpers.callMethod(launcher, "getDeviceProfile");
+                    if (!XposedHelpers.getBooleanField(profile, "isLandscape")
+                            || !XposedHelpers.getBooleanField(profile, "allowRotation")) return;
+                    if (!XposedHelpers.getBooleanField(param.args[0], "stateIsOverview")) return;
+                    Object bar = XposedHelpers.callMethod(launcher, "getLGOverviewPanel");
+                    Object dots = XposedHelpers.callMethod(launcher, "getPageindicator");
+                    if (!(bar instanceof android.view.View) || !(dots instanceof android.view.View)) return;
+                    android.view.View b = (android.view.View) bar, d = (android.view.View) dots;
+                    if (b.getHeight() > 0 && d.getHeight() > 0) {
+                        param.setResult(dotsAboveBar(b, d));
+                        return;
+                    }
+                    // The bar is shown for the first time and not laid out yet: once it is,
+                    // the dots move from where LG's animation put them.
+                    b.addOnLayoutChangeListener(new android.view.View.OnLayoutChangeListener() {
+                        @Override
+                        public void onLayoutChange(android.view.View v, int l, int t, int r, int bottom,
+                                                   int ol, int ot, int or, int ob) {
+                            if (v.getHeight() == 0 || d.getHeight() == 0) return;
+                            v.removeOnLayoutChangeListener(this);
+                            d.animate().translationY(dotsAboveBar(v, d)).setDuration(150).start();
+                        }
+                    });
+                }
+            });
+        }
 
         Class<?> folder = XposedHelpers.findClassIfExists("com.android.launcher3.folder.FolderIcon", cl);
         if (folder == null) return;
