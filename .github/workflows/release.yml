@@ -44,7 +44,7 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew --no-daemon :app:assembleRelease
-          cp app/build/outputs/apk/release/app-release.apk "GoDaijishou-${TAG}.apk"
+          cp app/build/outputs/apk/release/app-release.apk "WingCustom-${TAG}.apk"
 
       # Notes: the tag's annotation if it has one, else GitHub's generated notes.
       - name: Publish release
@@ -53,9 +53,10 @@ jobs:
         run: |
           notes=$(git tag -l --format='%(contents)' "$TAG")
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "GoDaijishou-${TAG}.apk" --clobber
+            gh release delete-asset "$TAG" "GoDaijishou-${TAG}.apk" -y 2>/dev/null || true # the name before Wing Custom
+            gh release upload "$TAG" "WingCustom-${TAG}.apk" --clobber
           elif [ -n "$notes" ]; then
-            gh release create "$TAG" "GoDaijishou-${TAG}.apk" --title "$TAG" --notes "$notes"
+            gh release create "$TAG" "WingCustom-${TAG}.apk" --title "$TAG" --notes "$notes"
           else
-            gh release create "$TAG" "GoDaijishou-${TAG}.apk" --title "$TAG" --generate-notes
+            gh release create "$TAG" "WingCustom-${TAG}.apk" --title "$TAG" --generate-notes
           fi
