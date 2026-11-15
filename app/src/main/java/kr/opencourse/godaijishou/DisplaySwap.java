@@ -107,6 +107,42 @@ final class DisplaySwap {
         Class<?> root = XposedHelpers.findClass("com.android.server.wm.RootWindowContainer", cl);
         XposedBridge.hookAllMethods(root, "onDisplayAdded", resyncNow);
         XposedBridge.hookAllMethods(root, "onDisplayChanged", resyncNow);
+        try {
+            installDarkWhileAsleep(cl);
+        } catch (Throwable t) {
+            ModuleLog.w(t);
+        }
+    }
+
+    private static final int WAKEFULNESS_AWAKE = 1;
+    private static volatile Object powerManager; // PowerManagerService
+
+    /**
+     * Going to sleep in main screen mode, LG's second screen power service follows the main
+     * display's dozing and restore requests and turns the second screen's panel on for a
+     * moment (it builds its swivel lock screen then, so that turn-on must stay): the panel the
+     * user just switched off lit up and faded out. While the phone is not awake the second
+     * screen's panel is turned on with its backlight off. A wake-up makes the phone awake first.
+     */
+    private static void installDarkWhileAsleep(ClassLoader cl) {
+        Class<?> pms = XposedHelpers.findClassIfExists("com.android.server.power.PowerManagerService", cl);
+        Class<?> state = XposedHelpers.findClassIfExists("com.android.server.display.SecondaryDisplayPowerState", cl);
+        if (pms == null || state == null) return;
+        XposedBridge.hookAllConstructors(pms, new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                powerManager = param.thisObject;
+            }
+        });
+        XposedBridge.hookAllMethods(state, "setScreenBrightness", new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                Object p = powerManager;
+                if (p == null || param.args.length == 0 || !(param.args[0] instanceof Float)) return;
+                if ((Float) param.args[0] <= 0f) return;
+                if (XposedHelpers.getIntField(p, "mWakefulnessRaw") != WAKEFULNESS_AWAKE) param.args[0] = 0f;
+            }
+        });
     }
 
     /** Starts the test switch (once the system context and handler exist). */
