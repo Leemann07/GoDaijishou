@@ -59,6 +59,7 @@ public class MainModule implements IXposedHookLoadPackage {
             safely(() -> TouchBypassHook.install(cl));
             safely(() -> DisplaySwap.install(cl));
             safely(() -> SafetyEscape.install(cl));
+            safely(() -> MainScreen.install(cl));
         } else if (!BuildConfig.APPLICATION_ID.equals(pkg)) {
             // Anything else in the scope is a keyboard app: only the bottom strip option.
             safely(NavBarHook::installIme);
