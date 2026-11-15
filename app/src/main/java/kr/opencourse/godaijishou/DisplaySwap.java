@@ -177,6 +177,12 @@ final class DisplaySwap {
         // LG's camera follows (SwivelFold): the folded phone's camera while swapped. Written
         // outside the display lock. (SystemUI does not follow: see MainModule.)
         publish(DisplaySwap.swapped);
+        Handler rh = SystemSettings.handler();
+        if (rh != null) {
+            rh.removeCallbacks(RESYNC_WINDOWS);
+            rh.postDelayed(RESYNC_WINDOWS, 300);
+            rh.postDelayed(RESYNC_WINDOWS, 1_200);
+        }
         if (!swapped) {
             verifyAttempts = 0;
             Handler h = SystemSettings.handler();
@@ -186,6 +192,29 @@ final class DisplaySwap {
             }
         }
     }
+
+    /**
+     * The window manager keeps a display's size from when it learned it. Display 4 goes away
+     * on the swap and comes back on the restore; when its old window state was still being
+     * torn down, the window manager took it back as it was, with the top panel's 1080x1920 it
+     * had for a moment, and the second screen drew a squashed, homeless frame on its
+     * 1080x1240 panel. After every layout change both displays are told they changed, so the
+     * window manager reads their real size again (nothing happens when it already has it).
+     */
+    private static final Runnable RESYNC_WINDOWS = () -> {
+        try {
+            Object wms = XposedHelpers.callStaticMethod(Class.forName("android.os.ServiceManager"),
+                    "getService", "window");
+            Object root = XposedHelpers.getObjectField(wms, "mRoot");
+            for (int id : new int[] {android.view.Display.DEFAULT_DISPLAY, MainModule.SECOND_SCREEN_DISPLAY_ID}) {
+                if (XposedHelpers.callMethod(root, "getDisplayContent", id) != null) {
+                    XposedHelpers.callMethod(root, "onDisplayChanged", id);
+                }
+            }
+        } catch (Throwable t) {
+            ModuleLog.w(t);
+        }
+    };
 
     private static void publish(boolean on) {
         try {
