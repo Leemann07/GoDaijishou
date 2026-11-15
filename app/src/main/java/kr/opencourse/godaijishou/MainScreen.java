@@ -274,10 +274,10 @@ final class MainScreen {
                     && !TopMirror.isEscaped();
             if (wantMain) {
                 escape();
-                buzz(android.os.VibrationEffect.EFFECT_CLICK);
+                buzz(1);
             } else if (SystemSettings.mainReady) {
                 switchOn();
-                buzz(android.os.VibrationEffect.EFFECT_DOUBLE_CLICK);
+                buzz(2);
             }
             return;
         }
@@ -293,10 +293,20 @@ final class MainScreen {
         }
     }
 
-    private static void buzz(int effect) {
+    // Pulses felt in a pocket: LG's vibrator plays its click and double click alike, so plain
+    // pulses (80 ms each, 150 ms apart), as hardware feedback like the keys' own.
+    private static void buzz(int pulses) {
         try {
             android.os.Vibrator v = SystemSettings.context().getSystemService(android.os.Vibrator.class);
-            if (v != null) v.vibrate(android.os.VibrationEffect.createPredefined(effect));
+            if (v == null) return;
+            long[] timings = pulses == 1 ? new long[] {0, 80} : new long[] {0, 80, 150, 80};
+            android.os.VibrationEffect effect = android.os.VibrationEffect.createWaveform(timings, -1);
+            if (android.os.Build.VERSION.SDK_INT >= 33) {
+                v.vibrate(effect, android.os.VibrationAttributes.createForUsage(
+                        android.os.VibrationAttributes.USAGE_HARDWARE_FEEDBACK));
+            } else {
+                v.vibrate(effect);
+            }
         } catch (Throwable t) {
             ModuleLog.w(t);
         }
