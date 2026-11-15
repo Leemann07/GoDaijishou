@@ -290,7 +290,7 @@ final class MainScreen {
     // Right after a switch the panel shows a few frames laid out for the other display
     // (the window manager catching up with the new size): black over them for a moment, the
     // mode name on top. Only in use; locked or asleep nothing shows anyway.
-    private static final long SWITCH_COVER_MS = 500;
+    private static final long SWITCH_COVER_MS = 800; // past the last window resync (DisplaySwap)
 
     private static void coverSwitch(int displayId) {
         if (present()) showCover(displayId, SWITCH_COVER_MS);
