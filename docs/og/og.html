@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@500;700;900&display=block" rel="stylesheet">
+<style>
+  :root {
+    --ground: #121216; --surface: #222228; --ink: #ECECF0; --secondary: #A0A0AA;
+    --line: #383840; --butter: #FFC23D;
+  }
+  * { margin: 0; box-sizing: border-box; }
+  html, body { width: 1280px; height: 640px; overflow: hidden; background: var(--ground); }
+  body {
+    font-family: "Noto Sans KR", "Malgun Gothic", sans-serif; color: var(--ink);
+    position: relative;
+    background:
+      radial-gradient(700px 500px at 1050px 320px, rgba(255, 194, 61, .16), transparent 70%),
+      var(--ground);
+  }
+  .left { position: absolute; left: 72px; top: 72px; width: 640px; }
+  .brand { display: flex; align-items: center; gap: 22px; }
+  .brand img { width: 96px; height: 96px; border-radius: 22px; }
+  h1 { font-size: 76px; font-weight: 900; letter-spacing: -2px; line-height: 1; }
+  h1 i { color: var(--butter); font-style: normal; }
+  .tag { margin-top: 36px; font-size: 38px; font-weight: 700; line-height: 1.32; letter-spacing: -1px; }
+  .tag b { color: var(--butter); font-weight: 700; }
+  .sub { margin-top: 16px; font-size: 22px; color: var(--secondary); font-weight: 500; }
+  .chips { margin-top: 34px; display: flex; flex-wrap: wrap; gap: 10px; width: 600px; }
+  .chip {
+    font-size: 19px; font-weight: 500; padding: 9px 16px; border-radius: 999px;
+    background: var(--surface); border: 1px solid var(--line);
+  }
+  .foot { position: absolute; left: 72px; bottom: 48px; font-size: 19px; color: var(--secondary); font-weight: 500; }
+  .phones { position: absolute; right: 52px; top: 0; width: 560px; height: 640px; }
+  .phone {
+    position: absolute; width: 326px; border-radius: 28px; padding: 10px;
+    background: #2C2C33; border: 1px solid #44444D;
+    box-shadow: 0 30px 70px rgba(0, 0, 0, .55);
+  }
+  .phone img { display: block; width: 100%; border-radius: 18px; }
+  .p1 { left: 0; top: 168px; transform: rotate(-5deg); }
+  .p2 { right: 0; top: 56px; transform: rotate(4deg); }
+</style>
+</head>
+<body>
+  <div class="left">
+    <div class="brand">
+      <img src="../../app/sampledata/icon.svg" alt="">
+      <h1>Wing Custom<i>.</i></h1>
+    </div>
+    <p class="tag">상단 화면 없이도<br><b>하단 하나로 온전한 폰</b>처럼</p>
+    <p class="sub">루팅된 LG Wing을 위한 LSPosed 모듈</p>
+    <div class="chips">
+      <span class="chip">메인 화면 모드</span>
+      <span class="chip">볼륨 키로 화면 전환</span>
+      <span class="chip">세컨드 스크린 런처</span>
+      <span class="chip">절대 갇히지 않는 안전장치</span>
+    </div>
+  </div>
+  <div class="foot">github.com/jshsakura/GoDaijishou</div>
+  <div class="phones">
+    <div class="phone p1"><img src="../../app/sampledata/main_home.png" alt=""></div>
+    <div class="phone p2"><img src="../../app/sampledata/main_qs.png" alt=""></div>
+  </div>
+</body>
+</html>
