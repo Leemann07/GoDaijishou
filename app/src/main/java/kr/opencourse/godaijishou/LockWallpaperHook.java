@@ -2,8 +2,10 @@ package kr.opencourse.godaijishou;
 
 import android.graphics.Bitmap;
 import android.view.Surface;
+import android.widget.ImageView;
 
 import de.robv.android.xposed.XC_MethodHook;
+import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 
 /**
@@ -16,6 +18,10 @@ import de.robv.android.xposed.XposedHelpers;
  * forcing set it (landscape 90), and LG turned the picture sideways or upside down. The lock
  * window is laid out in the second screen's own frame, so the picture is never turned:
  * every value is answered as 270 (0 degrees).
+ *
+ * LG's swivel lock (CoverLock) also stretches the picture to its window, made for the
+ * swivel's one landscape shape: a portrait picture on the landscape panel showed stretched.
+ * It is scaled to cover the window instead, keeping its proportions.
  */
 final class LockWallpaperHook {
 
@@ -30,5 +36,14 @@ final class LockWallpaperHook {
                         param.args[1] = Surface.ROTATION_270;
                     }
                 });
+        Class<?> coverLock = XposedHelpers.findClassIfExists("com.lge.systemui.coverpanel.CoverLock", cl);
+        if (coverLock == null) return;
+        XposedBridge.hookAllMethods(coverLock, "initInflate", new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                Object view = XposedHelpers.getObjectField(param.thisObject, "mLockView");
+                if (view instanceof ImageView) ((ImageView) view).setScaleType(ImageView.ScaleType.CENTER_CROP);
+            }
+        });
     }
 }
