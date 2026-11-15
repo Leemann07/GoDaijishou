@@ -180,8 +180,10 @@ final class DisplaySwap {
         Handler rh = SystemSettings.handler();
         if (rh != null) {
             rh.removeCallbacks(RESYNC_WINDOWS);
-            rh.postDelayed(RESYNC_WINDOWS, 300);
-            rh.postDelayed(RESYNC_WINDOWS, 1_200);
+            // At once, then again as the window manager catches up with the change.
+            rh.post(RESYNC_WINDOWS);
+            rh.postDelayed(RESYNC_WINDOWS, 150);
+            rh.postDelayed(RESYNC_WINDOWS, 600);
         }
         if (!swapped) {
             verifyAttempts = 0;

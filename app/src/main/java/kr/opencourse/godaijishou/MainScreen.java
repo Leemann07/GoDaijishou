@@ -79,7 +79,7 @@ final class MainScreen {
             if (!DisplaySwap.isSwapped()) {
                 DisplaySwap.set(true);
                 bringAppsLater();
-                coverGoesSoon();
+                coverSwitch(Display.DEFAULT_DISPLAY);
             }
             if (announceMain) {
                 announceMain = false;
@@ -234,7 +234,7 @@ final class MainScreen {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) {
                         Handler h = SystemSettings.handler();
-                        if (h != null && swapsOnUnlock()) h.postAtFrontOfQueue(MainScreen::showCover);
+                        if (h != null && swapsOnUnlock()) h.postAtFrontOfQueue(() -> showCover(MainModule.SECOND_SCREEN_DISPLAY_ID, COVER_MAX_MS));
                     }
                 });
     }
@@ -256,14 +256,14 @@ final class MainScreen {
                 && !DisplaySwap.isSwapped();
     }
 
-    private static void showCover() {
-        if (cover != null) return;
+    private static void showCover(int displayId, long maxMs) {
+        hideCover();
         try {
             Context system = SystemSettings.context();
             android.hardware.display.DisplayManager dm = system.getSystemService(android.hardware.display.DisplayManager.class);
-            Display second = dm.getDisplay(MainModule.SECOND_SCREEN_DISPLAY_ID);
-            if (second == null) return;
-            Context ui = system.createDisplayContext(second);
+            Display target = dm.getDisplay(displayId);
+            if (target == null) return;
+            Context ui = system.createDisplayContext(target);
             View v = new View(ui);
             v.setBackgroundColor(0xFF000000);
             WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
@@ -280,20 +280,21 @@ final class MainScreen {
             coverWm = ui.getSystemService(WindowManager.class);
             coverWm.addView(v, lp);
             cover = v;
-            SystemSettings.handler().postDelayed(HIDE_COVER, COVER_MAX_MS);
+            SystemSettings.handler().postDelayed(HIDE_COVER, maxMs);
         } catch (Throwable t) {
             ModuleLog.w(t);
             cover = null;
         }
     }
 
-    // Swapped: the main screen draws its first frames, then the cover goes (if display 4
-    // did not take it along already).
-    private static void coverGoesSoon() {
-        Handler h = SystemSettings.handler();
-        if (h == null || cover == null) return;
-        h.removeCallbacks(HIDE_COVER);
-        h.postDelayed(HIDE_COVER, 400);
+    // Right after a switch the panel shows a few frames laid out for the other display
+    // (the window manager catching up with the new size): black over them for a moment, the
+    // mode name on top. Only in use; locked or asleep nothing shows anyway.
+    private static final long SWITCH_COVER_MS = 500;
+
+    private static void coverSwitch(int displayId) {
+        if (present()) showCover(displayId, SWITCH_COVER_MS);
+        else hideCover();
     }
 
     private static void hideCover() {
@@ -441,11 +442,22 @@ final class MainScreen {
                 v.setText(app.getString(id));
                 v.setTextColor(Color.WHITE);
                 v.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-                v.setPadding((int) (22 * dp), (int) (11 * dp), (int) (22 * dp), (int) (11 * dp));
+                v.setPadding((int) (14 * dp), (int) (10 * dp), (int) (22 * dp), (int) (10 * dp));
                 GradientDrawable bg = new GradientDrawable();
                 bg.setColor(0xE6222228);
                 bg.setCornerRadius(24 * dp);
                 v.setBackground(bg);
+                try {
+                    android.graphics.drawable.Drawable icon = system.getPackageManager()
+                            .getApplicationIcon(BuildConfig.APPLICATION_ID);
+                    int s = (int) (22 * dp);
+                    icon.setBounds(0, 0, s, s);
+                    v.setCompoundDrawablesRelative(icon, null, null, null);
+                    v.setCompoundDrawablePadding((int) (10 * dp));
+                    v.setGravity(Gravity.CENTER_VERTICAL);
+                } catch (Throwable t) {
+                    ModuleLog.w(t); // the name alone
+                }
                 WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                         WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
                         2010 /* TYPE_SYSTEM_ERROR */,
@@ -500,11 +512,13 @@ final class MainScreen {
 
     /** Back to the second screen at once (keys, a trial nobody kept); the app follows. */
     static void escape() {
+        boolean wasSwapped = DisplaySwap.isSwapped();
         announceMain = false;
         endTrial();
         ownSwap = false;
         TopMirror.escape(); // holds even if the app never hears of it
         DisplaySwap.restoreNow();
+        if (wasSwapped) coverSwitch(MainModule.SECOND_SCREEN_DISPLAY_ID);
         tellApp(AppPreferences.SCREEN_MODE_SECOND);
     }
 
