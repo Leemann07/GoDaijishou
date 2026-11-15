@@ -264,6 +264,29 @@ final class TopHomeHook {
             }
         });
 
+        // Edit mode's button bar (widgets, wallpaper, home settings...): the swivel home pads it
+        // by 567px on each side in landscape, made for the 2460px top screen. On the 1240px
+        // panel that left the buttons a sliver and every label wrapped letter by letter.
+        XC_MethodHook barPadding = new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                Object launcher = param.thisObject;
+                if (!(launcher instanceof android.app.Activity)) {
+                    launcher = XposedHelpers.getObjectField(param.thisObject, "mActivity");
+                }
+                Object bar = XposedHelpers.callMethod(launcher, "getLGOverviewPanel");
+                if (!(bar instanceof android.view.View)) return;
+                android.view.View v = (android.view.View) bar;
+                if (v.getPaddingLeft() != 0 || v.getPaddingRight() != 0) {
+                    v.setPadding(0, v.getPaddingTop(), 0, v.getPaddingBottom());
+                }
+            }
+        };
+        Class<?> launcherClass = XposedHelpers.findClassIfExists("com.android.launcher3.Launcher", cl);
+        if (launcherClass != null) XposedBridge.hookAllMethods(launcherClass, "showOverviewMode", barPadding);
+        Class<?> rootView = XposedHelpers.findClassIfExists("com.android.launcher3.LauncherRootView", cl);
+        if (rootView != null) XposedBridge.hookAllMethods(rootView, "updateOverViewPanelPadding", barPadding);
+
         Class<?> folder = XposedHelpers.findClassIfExists("com.android.launcher3.folder.FolderIcon", cl);
         if (folder == null) return;
         XposedBridge.hookAllConstructors(folder, new XC_MethodHook() {
@@ -317,16 +340,21 @@ final class TopHomeHook {
 
     // --- Fresh layout after the main display changed ---
 
-    private static int startShort, startLong, startDpi;
+    // The main display the home was laid out for: {width, height, density}.
+    private static int[] start;
     private static long startedAt;
 
     /**
-     * LG's home keeps the grid it computed for the display it started on. When main screen mode
-     * changes the main display (another panel, size and density), the home came back with that
-     * old grid: names cut off, the edit bar squeezed letter by letter. When the home is shown
-     * again on a main display unlike the one it started on, it restarts once and lays itself
-     * out for the display it is on. Nothing happens while it stays hidden (lock screen), so a
-     * lock and unlock that ends where it began costs nothing.
+     * LG's home keeps the grid it computed for the display it started on, and redoes it badly
+     * when that display changes under it:
+     *  - main screen mode changes the main display (another panel, size and density): names
+     *    cut off, the edit bar squeezed letter by letter;
+     *  - forced rotation turns the panel between portrait and landscape: coming back to
+     *    landscape the whole home was drawn shrunk.
+     * A freshly started home lays out right in either case. So when the home is shown (or
+     * turned while shown) on a main display unlike the one it started on, it restarts once
+     * and lays itself out for the display it is on. Nothing happens while it stays hidden
+     * (lock screen), so a lock and unlock that ends where it began costs nothing.
      */
     private static void installFreshLayout(ClassLoader cl) {
         Class<?> launcher = XposedHelpers.findClassIfExists("com.android.launcher3.Launcher", cl);
@@ -337,31 +365,29 @@ final class TopHomeHook {
                 if (startedAt != 0) return;
                 int[] m = mainDisplay((Context) param.thisObject);
                 if (m == null) return;
-                startShort = m[0];
-                startLong = m[1];
-                startDpi = m[2];
+                start = m;
                 startedAt = android.os.SystemClock.elapsedRealtime();
             }
         });
-        XposedBridge.hookAllMethods(launcher, "onResume", new XC_MethodHook() {
+        XC_MethodHook check = new XC_MethodHook() {
             @Override
             protected void beforeHookedMethod(MethodHookParam param) {
                 if (startedAt == 0) return;
                 int[] m = mainDisplay((Context) param.thisObject);
-                if (m == null || (m[0] == startShort && m[1] == startLong && m[2] == startDpi)) return;
+                if (m == null || java.util.Arrays.equals(m, start)) return;
                 if (android.os.SystemClock.elapsedRealtime() - startedAt < 3000) {
-                    // Just started and the display moved meanwhile: take it as the start.
-                    startShort = m[0];
-                    startLong = m[1];
-                    startDpi = m[2];
+                    start = m; // just started and the display moved meanwhile: take it as the start
                     return;
                 }
                 android.os.Process.killProcess(android.os.Process.myPid());
             }
-        });
+        };
+        XposedBridge.hookAllMethods(launcher, "onResume", check);
+        // The home handles rotation itself (no restart of the activity): checked there too.
+        XposedBridge.hookAllMethods(launcher, "onConfigurationChanged", check);
     }
 
-    // {short side, long side, density} of the main display; rotation does not count.
+    // {width, height, density} of the main display as it is turned now.
     private static int[] mainDisplay(Context c) {
         try {
             android.hardware.display.DisplayManager dm = c.getSystemService(android.hardware.display.DisplayManager.class);
@@ -369,8 +395,7 @@ final class TopHomeHook {
             if (d == null) return null;
             android.util.DisplayMetrics out = new android.util.DisplayMetrics();
             d.getRealMetrics(out);
-            return new int[] {Math.min(out.widthPixels, out.heightPixels),
-                    Math.max(out.widthPixels, out.heightPixels), out.densityDpi};
+            return new int[] {out.widthPixels, out.heightPixels, out.densityDpi};
         } catch (Throwable t) {
             ModuleLog.w(t);
             return null;
