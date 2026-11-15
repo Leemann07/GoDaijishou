@@ -47,6 +47,8 @@ final class DisplaySwap {
     private DisplaySwap() {
     }
 
+    private static boolean resyncing;
+
     static void install(ClassLoader cl) {
         XposedBridge.hookAllConstructors(
                 XposedHelpers.findClass("com.android.server.display.LogicalDisplayMapper", cl),
@@ -88,6 +90,23 @@ final class DisplaySwap {
                         inReset = false;
                     }
                 });
+        // A display coming back (or changed) with a stale size is put right in the same call,
+        // before its next frame (the posted resyncs came a few frames late).
+        XC_MethodHook resyncNow = new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                if (resyncing) return; // our own onDisplayChanged
+                resyncing = true;
+                try {
+                    RESYNC_WINDOWS.run();
+                } finally {
+                    resyncing = false;
+                }
+            }
+        };
+        Class<?> root = XposedHelpers.findClass("com.android.server.wm.RootWindowContainer", cl);
+        XposedBridge.hookAllMethods(root, "onDisplayAdded", resyncNow);
+        XposedBridge.hookAllMethods(root, "onDisplayChanged", resyncNow);
     }
 
     /** Starts the test switch (once the system context and handler exist). */
@@ -199,18 +218,24 @@ final class DisplaySwap {
      * on the swap and comes back on the restore; when its old window state was still being
      * torn down, the window manager took it back as it was, with the top panel's 1080x1920 it
      * had for a moment, and the second screen drew a squashed, homeless frame on its
-     * 1080x1240 panel. After every layout change both displays are told they changed, so the
-     * window manager reads their real size again (nothing happens when it already has it).
+     * 1080x1240 panel. After every layout change a display whose window size is not its
+     * panel's is told it changed, so the window manager reads the real size again. One that
+     * already has it is left alone: every needless change is one more relayout on screen.
      */
     private static final Runnable RESYNC_WINDOWS = () -> {
         try {
             Object wms = XposedHelpers.callStaticMethod(Class.forName("android.os.ServiceManager"),
                     "getService", "window");
             Object root = XposedHelpers.getObjectField(wms, "mRoot");
+            Object dmi = XposedHelpers.getObjectField(wms, "mDisplayManagerInternal");
+            Object real = XposedHelpers.newInstance(Class.forName("android.view.DisplayInfo"));
             for (int id : new int[] {android.view.Display.DEFAULT_DISPLAY, MainModule.SECOND_SCREEN_DISPLAY_ID}) {
-                if (XposedHelpers.callMethod(root, "getDisplayContent", id) != null) {
-                    XposedHelpers.callMethod(root, "onDisplayChanged", id);
-                }
+                Object dc = XposedHelpers.callMethod(root, "getDisplayContent", id);
+                if (dc == null) continue;
+                XposedHelpers.callMethod(dmi, "getNonOverrideDisplayInfo", id, real); // the panel, not what WM told it
+                if (XposedHelpers.getIntField(dc, "mInitialDisplayWidth") == XposedHelpers.getIntField(real, "logicalWidth")
+                        && XposedHelpers.getIntField(dc, "mInitialDisplayHeight") == XposedHelpers.getIntField(real, "logicalHeight")) continue;
+                XposedHelpers.callMethod(root, "onDisplayChanged", id);
             }
         } catch (Throwable t) {
             ModuleLog.w(t);

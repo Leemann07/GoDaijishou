@@ -161,7 +161,8 @@ switch() {
 }
 
 adb get-state >/dev/null 2>&1 || { echo "no device"; exit 2; }
-if sh dumpsys window | grep -q "isKeyguardShowing=true"; then echo "unlock the phone first"; exit 2; fi
+# The top panel (no screen) may stay locked; the bottom one must not.
+if ! sh dumpsys window | grep -q "isKeyguardShowing=false"; then echo "unlock the phone first"; exit 2; fi
 
 DENSITY=""
 declare -A WATCHERS
