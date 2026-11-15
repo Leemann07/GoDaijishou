@@ -81,6 +81,10 @@ final class MainScreen {
                 bringAppsLater();
                 coverGoesSoon();
             }
+            if (announceMain) {
+                announceMain = false;
+                announce(AppPreferences.SCREEN_MODE_ORIGINAL);
+            }
             syncBrightness();
             ownSwap = DisplaySwap.isSwapped();
             return;
@@ -375,6 +379,7 @@ final class MainScreen {
     static void toggle() {
         if (DisplaySwap.isSwapped() || trial) {
             escape();
+            announce(AppPreferences.SCREEN_MODE_SECOND);
             return;
         }
         if (!present()) {
@@ -391,7 +396,10 @@ final class MainScreen {
             }
             return;
         }
-        if (SystemSettings.mainReady) switchOn();
+        if (SystemSettings.mainReady) {
+            announceMain = true; // shown once the swap is done (not for the "keep?" card)
+            switchOn();
+        }
     }
 
     private static void switchOn() {
@@ -400,6 +408,74 @@ final class MainScreen {
             apply();
         } else {
             tellApp(AppPreferences.SCREEN_MODE_ORIGINAL); // its settings come back here
+        }
+    }
+
+    // --- Mode name after a switch with the keys ---
+
+    private static final long ANNOUNCE_DELAY_MS = 400, ANNOUNCE_SHOW_MS = 1300;
+    private static volatile boolean announceMain;
+    private static View announced;
+    private static WindowManager announcedWm;
+    private static final Runnable UNANNOUNCE = MainScreen::unannounce;
+
+    /** "Main screen" / "Second screen" for a moment at the bottom of the screen now in use. */
+    static void announce(int mode) {
+        Handler h = SystemSettings.handler();
+        if (h == null) return;
+        h.postDelayed(() -> {
+            if (!present()) return; // asleep: the buzz tells it
+            unannounce();
+            try {
+                Context system = SystemSettings.context();
+                DisplayManager dm = system.getSystemService(DisplayManager.class);
+                Display d = dm.getDisplay(DisplaySwap.isSwapped() ? Display.DEFAULT_DISPLAY
+                        : MainModule.SECOND_SCREEN_DISPLAY_ID);
+                if (d == null) return;
+                Context ui = system.createDisplayContext(d);
+                Resources app = system.createPackageContext(BuildConfig.APPLICATION_ID, 0).getResources();
+                int id = app.getIdentifier(mode == AppPreferences.SCREEN_MODE_ORIGINAL ? "mode_original" : "mode_second",
+                        "string", BuildConfig.APPLICATION_ID);
+                float dp = ui.getResources().getDisplayMetrics().density;
+                TextView v = new TextView(ui);
+                v.setText(app.getString(id));
+                v.setTextColor(Color.WHITE);
+                v.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+                v.setPadding((int) (22 * dp), (int) (11 * dp), (int) (22 * dp), (int) (11 * dp));
+                GradientDrawable bg = new GradientDrawable();
+                bg.setColor(0xE6222228);
+                bg.setCornerRadius(24 * dp);
+                v.setBackground(bg);
+                WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                        WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
+                        2010 /* TYPE_SYSTEM_ERROR */,
+                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                                | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+                        PixelFormat.TRANSLUCENT);
+                lp.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
+                lp.y = (int) (96 * dp);
+                lp.windowAnimations = android.R.style.Animation_Toast;
+                lp.setTitle("WingCustom:Mode");
+                announcedWm = ui.getSystemService(WindowManager.class);
+                announcedWm.addView(v, lp);
+                announced = v;
+                h.postDelayed(UNANNOUNCE, ANNOUNCE_SHOW_MS);
+            } catch (Throwable t) {
+                ModuleLog.w(t);
+            }
+        }, ANNOUNCE_DELAY_MS);
+    }
+
+    private static void unannounce() {
+        View v = announced;
+        announced = null;
+        Handler h = SystemSettings.handler();
+        if (h != null) h.removeCallbacks(UNANNOUNCE);
+        if (v == null || announcedWm == null) return;
+        try {
+            announcedWm.removeView(v);
+        } catch (Throwable t) {
+            ModuleLog.w(t); // its display went away with a switch
         }
     }
 
@@ -424,6 +500,7 @@ final class MainScreen {
 
     /** Back to the second screen at once (keys, a trial nobody kept); the app follows. */
     static void escape() {
+        announceMain = false;
         endTrial();
         ownSwap = false;
         TopMirror.escape(); // holds even if the app never hears of it
@@ -448,6 +525,7 @@ final class MainScreen {
     // --- Trial ---
 
     private static void startTrial(int epoch) {
+        announceMain = false; // the card says it
         Handler h = SystemSettings.handler();
         if (h == null) return;
         DisplaySwap.set(true);
