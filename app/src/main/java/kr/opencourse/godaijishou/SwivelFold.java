@@ -9,7 +9,6 @@ import android.provider.Settings;
 
 import java.util.Collections;
 import java.util.Set;
-import java.util.WeakHashMap;
 
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
@@ -24,9 +23,9 @@ import de.robv.android.xposed.XposedHelpers;
  *
  * LG's apps learn the swivel state from PostureManager and DisplayManagerHelper only:
  * getSwivelState() (2 = open) and state callbacks (100/101 opening/open, 200/201
- * closing/closed). While swapped they are told "closed", and the swap starting or ending is
- * replayed to their callbacks as the swivel closing or opening. Unswapped (second screen
- * mode) nothing changes.
+ * closing/closed). A camera process started while swapped is told "closed" for its whole
+ * life; one started unswapped (second screen mode) sees LG's answers unchanged. When the
+ * mode changes under a running camera, its process ends and the next start follows the mode.
  */
 final class SwivelFold {
 
@@ -40,12 +39,9 @@ final class SwivelFold {
     private static final int STATE_OPEN = 2, STATE_CLOSED = 0;
     private static final int OPENING = 100, OPENED = 101, CLOSING = 200, CLOSED = 201;
 
-    private static final Set<Object> callbacks = Collections.synchronizedSet(
-            Collections.newSetFromMap(new WeakHashMap<>()));
     private static final Set<Class<?>> hookedCallbacks = Collections.synchronizedSet(new java.util.HashSet<>());
     private static volatile boolean folded;
     private static boolean observing;
-    private static java.lang.ref.WeakReference<Object> manager = new java.lang.ref.WeakReference<>(null);
 
     private SwivelFold() {
     }
@@ -85,28 +81,15 @@ final class SwivelFold {
         XC_MethodHook register = new XC_MethodHook() {
             @Override
             protected void beforeHookedMethod(MethodHookParam param) {
-                if (param.args.length > 0 && param.args[0] != null) {
-                    callbacks.add(param.args[0]);
-                    rewrite(param.args[0].getClass());
-                }
-                manager = new java.lang.ref.WeakReference<>(param.thisObject);
+                if (param.args.length > 0 && param.args[0] != null) rewrite(param.args[0].getClass());
                 observe();
-            }
-        };
-        XC_MethodHook unregister = new XC_MethodHook() {
-            @Override
-            protected void beforeHookedMethod(MethodHookParam param) {
-                if (param.args.length > 0) callbacks.remove(param.args[0]);
             }
         };
         XposedBridge.hookAllMethods(source, "registerPostureStateCallback", register);
         XposedBridge.hookAllMethods(source, "registerSwivelStateCallback", register);
-        XposedBridge.hookAllMethods(source, "unregisterPostureStateCallback", unregister);
-        XposedBridge.hookAllMethods(source, "unregisterSwivelStateCallback", unregister);
         XposedBridge.hookAllConstructors(source, new XC_MethodHook() {
             @Override
             protected void afterHookedMethod(MethodHookParam param) {
-                if (manager.get() == null) manager = new java.lang.ref.WeakReference<>(param.thisObject);
                 observe();
             }
         });
@@ -120,7 +103,7 @@ final class SwivelFold {
                 XposedBridge.hookAllMethods(c, "onSwivelStateChanged", new XC_MethodHook() {
                     @Override
                     protected void beforeHookedMethod(MethodHookParam param) {
-                        if (replaying || !folded) return;
+                        if (!folded) return;
                         if (param.args.length == 0 || !(param.args[0] instanceof Integer)) return;
                         int s = (Integer) param.args[0];
                         if (s == OPENING) param.args[0] = CLOSING;
@@ -133,73 +116,28 @@ final class SwivelFold {
         }
     }
 
-    private static volatile boolean replaying;
-
     private static synchronized void observe() {
         if (observing) return;
         Application app = AndroidAppHelper.currentApplication();
         if (app == null) return;
         observing = true;
-        Handler main = new Handler(Looper.getMainLooper());
+        // Latched for the life of the process: the camera builds its swivel or plain parts
+        // once, and flipping the answer under a running camera mixed the two (a plain ShotCtx
+        // cast to SwivelShotCtx, swivel sizes read from arrays never built) and crashed it.
+        folded = Settings.Global.getInt(app.getContentResolver(), KEY_SWAPPED, 0) == 1;
         try {
             app.getContentResolver().registerContentObserver(Settings.Global.getUriFor(KEY_SWAPPED), false,
-                    new ContentObserver(main) {
+                    new ContentObserver(new Handler(Looper.getMainLooper())) {
                         @Override
                         public void onChange(boolean selfChange) {
-                            apply(app);
+                            boolean want = Settings.Global.getInt(app.getContentResolver(), KEY_SWAPPED, 0) == 1;
+                            // The mode changed under this process: end it quietly instead of
+                            // letting it crash. The next start follows the new mode.
+                            if (want != folded) android.os.Process.killProcess(android.os.Process.myPid());
                         }
                     });
         } catch (Throwable t) {
             ModuleLog.w(t);
-        }
-        // Read at once (already swapped at boot): answers from here on are folded.
-        folded = Settings.Global.getInt(app.getContentResolver(), KEY_SWAPPED, 0) == 1;
-        if (folded) main.post(() -> replay(true));
-    }
-
-    private static void apply(Application app) {
-        boolean want = Settings.Global.getInt(app.getContentResolver(), KEY_SWAPPED, 0) == 1;
-        if (want == folded) return;
-        folded = want;
-        if (!want && !reallyOpen()) return; // the swivel really is closed: LG said so already
-        replay(want);
-    }
-
-    // The swivel moving, as LG's service would send it.
-    private static void replay(boolean fold) {
-        if (!fold && !reallyOpen()) return;
-        int[] events = fold ? new int[] {CLOSING, CLOSED} : new int[] {OPENING, OPENED};
-        Object[] targets;
-        synchronized (callbacks) {
-            targets = callbacks.toArray();
-        }
-        replaying = true;
-        try {
-            for (Object cb : targets) {
-                for (int event : events) {
-                    try {
-                        XposedHelpers.callMethod(cb, "onSwivelStateChanged", event);
-                    } catch (Throwable t) {
-                        ModuleLog.w(t);
-                    }
-                }
-            }
-        } finally {
-            replaying = false;
-        }
-    }
-
-    private static boolean reallyOpen() {
-        Object m = manager.get();
-        if (m == null) return true;
-        boolean was = folded;
-        try {
-            folded = false; // ask LG itself
-            return (int) XposedHelpers.callMethod(m, "getSwivelState") == STATE_OPEN;
-        } catch (Throwable t) {
-            return true;
-        } finally {
-            folded = was;
         }
     }
 }
