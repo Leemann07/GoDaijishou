@@ -22,8 +22,8 @@ android {
         minSdkVersion 26
         // 2. 타겟 SDK 버전도 34로 맞춰줍니다.
         targetSdkVersion 34
-        versionCode 31
-        versionName "2.1.6"
+        versionCode 32
+        versionName "2.1.7"
 
         // Fingerprint of the code that runs inside system_server / SystemUI (all sources but
         // the app's own screen and the hot-swapped StripView). The hook reports the value it
