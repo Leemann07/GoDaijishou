@@ -345,7 +345,8 @@ final class SystemSettings {
             StringBuilder b = new StringBuilder();
             for (boolean v : f) b.append(v ? '1' : '0');
             b.append(':').append(perfProfile).append(':').append(stripStyle).append(':').append(stripPos)
-                    .append(':').append(screenMode);
+                    .append(':').append(screenMode).append(':').append(modeEpoch)
+                    .append(':').append(mainReady ? 1 : 0);
             String value = b.toString();
             if (!value.equals(Settings.Global.getString(resolver, CACHE_KEY))) {
                 Settings.Global.putString(resolver, CACHE_KEY, value);
@@ -403,6 +404,12 @@ final class SystemSettings {
                 stripPos = Integer.parseInt(parts[3]);
             }
             if (parts.length > 4) screenMode = Integer.parseInt(parts[4]);
+            // Main screen mode swaps at once, before the lock screen is first laid out on the
+            // other panel (it came up portrait, then turned sideways: touches hit other keys).
+            if (parts.length > 6) {
+                modeEpoch = Integer.parseInt(parts[5]);
+                mainReady = "1".equals(parts[6]);
+            }
             for (Runnable l : listeners) l.run();
         } catch (Throwable ignored) {
             ModuleLog.w(ignored);
