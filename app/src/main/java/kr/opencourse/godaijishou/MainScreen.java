@@ -232,6 +232,41 @@ final class MainScreen {
                         if (h != null && swapsOnUnlock()) h.postAtFrontOfQueue(() -> showCover(MainModule.SECOND_SCREEN_DISPLAY_ID, COVER_MAX_MS));
                     }
                 });
+        try {
+            installNoPartialWake(cl);
+        } catch (Throwable t) {
+            ModuleLog.w(t);
+        }
+    }
+
+    // --- No half-awake second screen ---
+
+    /**
+     * LG's always-on display (its fingerprint guide, the AOD tap) "partially wakes" the phone a
+     * second after it goes to sleep. With the swivel open LG's second screen power service then
+     * lights the second screen's lock screen while the phone stays asleep (not interactive):
+     * every touch on it is dropped, the screen looks frozen until it times out again.
+     * In main screen mode no partial wake-up happens at all; the power key wakes the phone
+     * fully as usual. LG's own method refuses the same way when the folder is closed, the
+     * phone is in a pocket or a cover is closed (returns false, nothing changes).
+     */
+    private static void installNoPartialWake(ClassLoader cl) {
+        Class<?> pms = de.robv.android.xposed.XposedHelpers.findClassIfExists(
+                "com.android.server.power.PowerManagerServiceEx", cl);
+        if (pms == null) return;
+        de.robv.android.xposed.XposedBridge.hookAllMethods(pms, "partialWakeUpNoUpdateLocked",
+                new de.robv.android.xposed.XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        if (!blocksPartialWake()) return;
+                        param.setResult(false);
+                        android.util.Log.i("GoDaijishou", "partial wake-up blocked (main screen mode)");
+                    }
+                });
+    }
+
+    static boolean blocksPartialWake() {
+        return SystemSettings.original() && !TopMirror.isEscaped();
     }
 
     // --- Unlock cover ---

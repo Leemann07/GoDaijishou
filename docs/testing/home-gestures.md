@@ -101,3 +101,26 @@ adb logcat -s GoDaijishouGesture:V '*:S'
 로그의 `inject HOME/RECENTS accepted=true`는 시스템이 DOWN·UP 주입을 받아들였다는 뜻이다.
 실제 화면 전환 성공은
 눈으로 확인하거나 `dumpsys activity activities`로 별도 확인한다.
+
+## 2.1.3 재진단과 실기기 결과 (2026-11-16, LG Wing A13)
+
+2.1.1~2.1.2의 "LG 홈이 아니면 제스처가 끝나지 않는다"는 전제는 틀렸다. LG quickstep은 기본 홈이
+Nova·Daijishou여도 `FallbackSwipeHandler`와 `RecentsActivity`로 홈·최근 앱을 직접 처리한다.
+폴백이 같은 스와이프에 HOME 키를 추가로 주입해 quickstep 애니메이션 도중 두 번째 이동이 일어났다
+(로그: `finishTouchTracking ... FallbackSwipeHandler` 직후 `fire HOME`, uid 0의 HOME 시작).
+
+- 폴백은 SystemUI `OverviewProxyService.mOverviewProxy`가 null일 때(quickstep 미연결)만 동작한다.
+  상태를 읽지 못하면 꺼진다. 런처 재시작 직후 1~2초는 연결은 됐지만 quickstep이 준비 전이라
+  어느 쪽도 처리하지 않는다(순정과 같음).
+- 잠금 중 터치가 먹지 않던 원인: 화면이 꺼진 뒤 LG AOD 안내(`com.lge.displayfingerprint`)가
+  `wakeUpForExtendedDisplay`로 부분 깨움을 요청하고, 스위블이 열린 상태라 세컨드 화면이
+  잠금화면을 띄운 채 켜지지만 시스템은 비대화형이라 터치가 버려졌다. 메인 화면 모드에서는
+  `PowerManagerServiceEx.partialWakeUpNoUpdateLocked`가 false를 반환한다(LG의 폴더 닫힘·주머니 차단과 같은 경로).
+- 세로 화면에 가로 최근 앱 카드: quickstep이 다른 패널 기준 DeviceProfile을 유지했다.
+  메인 디스플레이 패널(짧은 변·긴 변·dpi)이 바뀌면 `InvariantDeviceProfile.onConfigChanged`를 호출하고,
+  제스처 DOWN에서도 한 번 더 비교한다.
+- 2.1.2에서 뺀 키보드 프레임 높이 훅은 원인이 아니었으므로 복원했다.
+
+adb 합성 입력으로 확인: Nova·Daijishou 빠른 스와이프 = 홈, 천천히 멈춤 = 최근 앱, 폴백 주입 0건,
+잠금·해제 3회 후 카드 세로(648x792), 부분 깨움 차단 로그, 내비게이션 프레임 38px.
+미확인: 실제 손가락, ES-DE·Pegasus, 세컨드 화면 모드.

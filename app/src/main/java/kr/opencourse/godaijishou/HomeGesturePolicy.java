@@ -1,12 +1,16 @@
 package kr.opencourse.godaijishou;
 
-/** Unknown system state must not turn an ordinary touch/unlock into a navigation key. */
+/**
+ * The system's gesture engine (LG quickstep, in com.lge.launcher3) owns every bottom swipe
+ * whatever the home app is. Ours may only act while that engine is not connected to SystemUI
+ * (its process dead or restarting); otherwise both would navigate and race. Unknown state of
+ * any kind leaves the gesture to the system.
+ */
 final class HomeGesturePolicy {
     private HomeGesturePolicy() { }
 
-    static boolean allows(String homePackage, boolean gestural, Boolean locked, Boolean interactive) {
-        return gestural && Boolean.FALSE.equals(locked) && Boolean.TRUE.equals(interactive)
-                && homePackage != null && !homePackage.isEmpty() && !"?".equals(homePackage)
-                && !"android".equals(homePackage) && !"com.lge.launcher3".equals(homePackage);
+    static boolean allows(Boolean quickstepConnected, boolean gestural, Boolean locked, Boolean interactive) {
+        return Boolean.FALSE.equals(quickstepConnected)
+                && gestural && Boolean.FALSE.equals(locked) && Boolean.TRUE.equals(interactive);
     }
 }

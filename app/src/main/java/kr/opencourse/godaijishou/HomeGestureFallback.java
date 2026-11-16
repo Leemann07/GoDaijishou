@@ -1,9 +1,6 @@
 package kr.opencourse.godaijishou;
 
 import android.content.Context;
-import android.content.Intent;
-import android.content.pm.PackageManager;
-import android.content.pm.ResolveInfo;
 import android.graphics.Point;
 import android.os.PowerManager;
 import android.os.SystemClock;
@@ -24,17 +21,28 @@ import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 
 /**
- * Gesture navigation whatever the home app is (scope: com.android.systemui).
+ * Bottom swipes while the system's gesture engine is gone (scope: com.android.systemui).
  *
- * LG runs the action of a swipe-up in the home app: LG's own home plays it, a
- * third-party home can leave the pill rising without completing home/recents. For those
- * launchers we finish bottom-edge swipes, without changing LG's drawing or motion fields.
- * LG's own home keeps its original handler. Locked gestures are never completed here.
- * A held bottom-edge swipe can open recents on a third-party home as well as in an app.
+ * The engine is LG quickstep (TouchInteractionService in com.lge.launcher3). It handles home
+ * and recents whatever the home app is: LG's home directly, a third-party home (Nova,
+ * Daijishou, ES-DE, Pegasus) through its FallbackSwipeHandler and RecentsActivity. Verified on
+ * the Wing (A13): fling = the chosen home, hold = recents, from apps and from the home.
+ * Its process can die (crash, restart after a display change); SystemUI then has no engine
+ * until it binds again, and LG's pill still rises under the finger with nothing behind it.
+ *
+ * Only then do we finish the swipe (HOME / APP_SWITCH keys). While the engine is connected we
+ * do nothing at all: an earlier version also acted for third-party homes, and its HOME key
+ * landed in the middle of quickstep's own recents animation (two navigations per swipe,
+ * broken recents). LG's drawing and motion fields are never changed. Locked gestures are
+ * never completed here.
  */
 final class HomeGestureFallback {
     private static final String GESTURAL = "com.android.systemui.navigationbar.gestural.";
     private static final String RECEIVER = GESTURAL + "NavigationHandle$SysUiInputEventReceiver";
+    private static final String OVERVIEW_PROXY = "com.android.systemui.recents.OverviewProxyService";
+
+    // SystemUI's connection to quickstep (one per SystemUI process); null until it is built.
+    private static volatile Object overviewProxyService;
 
     private static final float START_ZONE_DP = 24f;
     private static final float FLING_DP_PER_SECOND = 350f;
@@ -44,12 +52,19 @@ final class HomeGestureFallback {
     private static int gestureWidth, gestureHeight, gestureRotation;
     private static float gestureDensity;
 
-    private static String gestureHome;
-
     private HomeGestureFallback() {
     }
 
     static void install(ClassLoader cl) {
+        // Without a view of the connection the fallback stays off: the system keeps the gesture.
+        Class<?> proxy = XposedHelpers.findClass(OVERVIEW_PROXY, cl);
+        XposedHelpers.findField(proxy, "mOverviewProxy");
+        XposedBridge.hookAllConstructors(proxy, new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                overviewProxyService = param.thisObject;
+            }
+        });
         Class<?> receiver = XposedHelpers.findClass(RECEIVER, cl);
         XposedBridge.hookAllMethods(receiver, "onInputEvent", new XC_MethodHook() {
             @Override
@@ -80,7 +95,6 @@ final class HomeGestureFallback {
         Context context = handle.getContext();
         if (!onMainDisplay(context)) return;
         HomeGestureTracker.Result result = HomeGestureTracker.Result.NONE;
-        String expectedHome;
         synchronized (lock) {
             int action = ev.getActionMasked();
             long down = ev.getDownTime();
@@ -118,8 +132,7 @@ final class HomeGestureFallback {
                         size.x, size.y, zone, rise, slop, FLING_DP_PER_SECOND * density)) return;
                 recycleVelocity();
                 if (!tracker.owns(receiver, down, device)) return;
-                gestureHome = eligibleHome(context);
-                if (ev.getPointerCount() != 1 || gestureHome == null) {
+                if (ev.getPointerCount() != 1 || !eligible(context)) {
                     tracker.cancel(receiver, down, device);
                     return;
                 }
@@ -170,15 +183,14 @@ final class HomeGestureFallback {
                 velocity.computeCurrentVelocity(1000);
                 float speed = -velocity.getYVelocity(ev.getPointerId(0));
                 result = tracker.finish(receiver, down, device, ev.getX(), ev.getY(), ev.getEventTime(), speed);
-                expectedHome = gestureHome;
             } finally {
                 recycleVelocity();
             }
         }
         if (result == HomeGestureTracker.Result.NONE) return;
-        String home = eligibleHome(context); // fresh state: no stale launcher/keyguard cache
-        if (home == null || !home.equals(expectedHome)) {
-            trace("suppressed at finish: environment changed");
+        // Fresh state: quickstep may have come back (or the phone locked) during the swipe.
+        if (!eligible(context)) {
+            trace("suppressed at finish: quickstep back or state changed");
             return;
         }
         synchronized (lock) {
@@ -207,19 +219,27 @@ final class HomeGestureFallback {
     // This framework overlay has no public R constant; read its value on every candidate
     // so switching between gesture/button navigation cannot leave a stale policy enabled.
     @android.annotation.SuppressLint("DiscouragedApi")
-    private static String eligibleHome(Context context) {
+    private static boolean eligible(Context context) {
         try {
             int mode = context.getResources().getIdentifier("config_navBarInteractionMode", "integer", "android");
             boolean gestural = mode != 0 && context.getResources().getInteger(mode) == 2;
             android.app.KeyguardManager km = context.getSystemService(android.app.KeyguardManager.class);
             PowerManager power = context.getSystemService(PowerManager.class);
-            Intent intent = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME);
-            ResolveInfo resolved = context.getPackageManager().resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY);
-            String home = resolved != null && resolved.activityInfo != null
-                    ? resolved.activityInfo.packageName : null;
-            return HomeGesturePolicy.allows(home, gestural,
+            return HomeGesturePolicy.allows(quickstepConnected(), gestural,
                     km == null ? null : km.isKeyguardLocked(),
-                    power == null ? null : power.isInteractive()) ? home : null;
+                    power == null ? null : power.isInteractive());
+        } catch (Throwable t) {
+            ModuleLog.w(t);
+            return false;
+        }
+    }
+
+    // What SystemUI's own dump prints as isConnected; null when it cannot be read.
+    private static Boolean quickstepConnected() {
+        Object service = overviewProxyService;
+        if (service == null) return null;
+        try {
+            return XposedHelpers.getObjectField(service, "mOverviewProxy") != null;
         } catch (Throwable t) {
             ModuleLog.w(t);
             return null;

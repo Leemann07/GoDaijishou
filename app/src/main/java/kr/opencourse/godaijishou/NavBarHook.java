@@ -27,7 +27,8 @@ import de.robv.android.xposed.XposedHelpers;
  *   With gesture navigation the keyboard sits on a strip as tall as the old 3-button bar,
  *   holding the "hide keyboard" and switcher buttons. The strip's height is the framework
  *   keyboard's own NavigationBarController: it is told there is no bottom inset and its frame
- *   is hidden. SystemUI's navigation frame and input area keep their stock heights.
+ *   is hidden. In SystemUI the navigation frame (what the keyboard sits on) is the gesture
+ *   bar's own height, so the keys come down to the gesture area.
  *   Takes effect when the keyboard restarts (or after a reboot).
  */
 final class NavBarHook {
@@ -52,6 +53,7 @@ final class NavBarHook {
     // --- SystemUI ---
 
     static void installSystemUi(ClassLoader cl) {
+        installFrameSwap();
         Class<?> handle = XposedHelpers.findClass(HANDLE, cl);
         XposedBridge.hookAllConstructors(handle, new XC_MethodHook() {
             @Override
@@ -158,6 +160,34 @@ final class NavBarHook {
         XposedBridge.hookAllMethods(impl, "installNavigationBarFrameIfNecessary", hideFrame);
         XposedBridge.hookAllMethods(impl, "onViewInitialized", hideFrame);
         XposedBridge.hookAllMethods(impl, "onWindowShown", hideFrame);
+    }
+
+    // SystemUI: the bar's frame (what the keyboard sits on) = the gesture bar's own height.
+    // Only these two dimens are answered differently; the gesture area itself is quickstep's
+    // own (navigation_bar_gesture_height) and the pill is kept inside the shorter bar by the
+    // canvas translation in onDraw. (2.1.2 dropped this as a suspect for the broken home
+    // gesture; the cause was a second HOME key from HomeGestureFallback, fixed in 2.1.3.)
+    private static void installFrameSwap() {
+        android.content.res.Resources sys = android.content.res.Resources.getSystem();
+        final int frame = sys.getIdentifier("navigation_bar_frame_height", "dimen", "android");
+        final int frameLand = sys.getIdentifier("navigation_bar_frame_height_landscape", "dimen", "android");
+        final int bar = sys.getIdentifier("navigation_bar_height", "dimen", "android");
+        if (frame == 0 || bar == 0) return;
+        XC_MethodHook swap = new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                int id = (Integer) param.args[0];
+                if (id != frame && (frameLand == 0 || id != frameLand)) return;
+                if (imeStripOff()) param.args[0] = bar;
+            }
+        };
+        for (String name : new String[]{"getDimensionPixelSize", "getDimensionPixelOffset", "getDimension"}) {
+            try {
+                XposedHelpers.findAndHookMethod(android.content.res.Resources.class, name, int.class, swap);
+            } catch (Throwable ignored) {
+                ModuleLog.w(ignored);
+            }
+        }
     }
 
     // --- Settings ---
