@@ -61,25 +61,17 @@ final class MainScreen {
         if (epoch < 0) return; // the app's settings not read yet this boot
         watchPresent();
         watchBrightness();
-        // Locked or asleep: unswapped. LG's lock screen takes the unlock on the second screen
-        // only (its swivel lock), and swapped it never let go; so the swap is for the unlocked
-        // phone, undone when the screen goes off and done again on USER_PRESENT.
+        // Locked or asleep: stays as it is. Main screen mode keeps the swap (SwivelPosture
+        // makes LG's lock screen a plain phone lock screen on this panel).
         if (!present()) {
             if (trial) {
                 escape(); // locked during the trial: not kept
-            } else if (SwivelPosture.isEnabled()) {
-                // Fixed: the phone's own lock screen on this panel from the first lock after
-                // boot on (kept before, screen on); volume up + down still goes back.
-                if (!DisplaySwap.isSwapped() && kept() >= 0 && SystemSettings.mainReady && interactive()) {
-                    DisplaySwap.set(true);
-                    ownSwap = DisplaySwap.isSwapped();
-                    syncBrightness();
-                }
-            } else if (ownSwap && DisplaySwap.isSwapped() && !SwivelPosture.isEnabled()) {
-                // Fixed (SwivelPosture): the phone's own lock screen on this panel, stays swapped.
-                DisplaySwap.set(false);
-                ownSwap = false;
-                sleepSecondScreenSoon();
+            } else if (!DisplaySwap.isSwapped() && kept() >= 0 && SystemSettings.mainReady && interactive()) {
+                // Main screen mode stays fixed through lock (SwivelPosture): from the first lock
+                // after boot on the phone's own lock screen is on this panel.
+                DisplaySwap.set(true);
+                ownSwap = DisplaySwap.isSwapped();
+                syncBrightness();
             }
             return;
         }
@@ -345,22 +337,6 @@ final class MainScreen {
      * slept, so its touches were dropped. Once the layout settled, every group sleeps again
      * (goToSleep sleeps them all); the power key wakes the phone as usual.
      */
-    private static void sleepSecondScreenSoon() {
-        Handler h = SystemSettings.handler();
-        if (h == null) return;
-        h.postDelayed(() -> {
-            try {
-                Context c = SystemSettings.context();
-                android.os.PowerManager pm = c.getSystemService(android.os.PowerManager.class);
-                if (pm == null || pm.isInteractive()) return; // woken meanwhile: leave it
-                de.robv.android.xposed.XposedHelpers.callMethod(pm, "goToSleep",
-                        android.os.SystemClock.uptimeMillis());
-            } catch (Throwable t) {
-                ModuleLog.w(t);
-            }
-        }, 500);
-    }
-
     private static boolean presentWatched;
 
     private static void watchPresent() {
