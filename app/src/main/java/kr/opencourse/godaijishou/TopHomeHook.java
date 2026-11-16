@@ -66,6 +66,7 @@ final class TopHomeHook {
         });
         installGridOnce(cl);
         installSecondScreenGestures(cl);
+        safely(() -> installProfileRefresh(cl));
         safely(() -> installLabelsBelow(cl));
         safely(() -> installFreshLayout(cl));
         for (String name : new String[] {POSTURE, DISPLAY_HELPER}) {
@@ -95,6 +96,120 @@ final class TopHomeHook {
         };
         XposedBridge.hookAllMethods(source, "registerPostureStateCallback", register);
         XposedBridge.hookAllMethods(source, "registerSwivelStateCallback", register);
+    }
+
+    // --- Recents laid out for the main display it is on ---
+
+    private static final String IDP = "com.android.launcher3.InvariantDeviceProfile";
+    private static final String RECENTS = "com.android.quickstep.RecentsActivity";
+    // The main display {width, height, dpi} the profile was last computed for.
+    private static int[] profileFor;
+    private static java.lang.reflect.Method onConfigChanged;
+    private static final java.util.Set<android.app.Activity> recents =
+            java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>());
+
+    /**
+     * Quickstep (home and recents gestures, recents screen) lives in this process and keeps the
+     * device profile it computed for the main display. Main screen mode changes the main display
+     * at every lock (back to the top panel) and unlock (the second screen's panel), and LG's own
+     * refresh did not follow: after a lock/unlock the recents cards and the swipe-up animation
+     * kept the shape of the other panel (landscape cards on the portrait screen). A fresh
+     * process is right, so on any change of the main display's size or density the profile is
+     * computed again (LG's own onConfigChanged: initGrid reads the current default display),
+     * and an open recents screen takes the new profile. Works whatever the home app is.
+     */
+    private static void installProfileRefresh(ClassLoader cl) {
+        Class<?> idp = XposedHelpers.findClass(IDP, cl);
+        // Private in InvariantDeviceProfile; the instance is LG's subclass, where a lookup by
+        // name does not reach it. Keep the method itself.
+        onConfigChanged = XposedHelpers.findMethodExact(idp, "onConfigChanged", Context.class);
+        Class<?> recentsActivity = XposedHelpers.findClassIfExists(RECENTS, cl);
+        if (recentsActivity != null) {
+            XposedBridge.hookAllMethods(recentsActivity, "onCreate", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    recents.add((android.app.Activity) param.thisObject);
+                }
+            });
+            XposedBridge.hookAllMethods(recentsActivity, "onDestroy", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    recents.remove(param.thisObject);
+                }
+            });
+        }
+        Class<?> service = XposedHelpers.findClass(TOUCH_SERVICE, cl);
+        // Display events reach this process only while one of its screens is up (they did not
+        // come in while Nova or Daijishou was the home): checked again where it matters, at the
+        // start of each gesture, before quickstep reads the profile (its input runs on the main
+        // thread). Costs a size lookup per touch-down; recomputes once after a panel change.
+        XposedBridge.hookAllMethods(service, "onInputEvent", new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                if (param.args.length == 0 || !(param.args[0] instanceof android.view.MotionEvent)) return;
+                if (((android.view.MotionEvent) param.args[0]).getActionMasked()
+                        != android.view.MotionEvent.ACTION_DOWN) return;
+                Context app = ((Context) param.thisObject).getApplicationContext();
+                if (app != null) refreshProfile(cl, app);
+            }
+        });
+        XposedBridge.hookAllMethods(service, "onCreate", new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                Context app = ((Context) param.thisObject).getApplicationContext();
+                if (app == null) return;
+                android.hardware.display.DisplayManager dm =
+                        app.getSystemService(android.hardware.display.DisplayManager.class);
+                if (dm == null) return;
+                android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
+                Runnable refresh = () -> refreshProfile(cl, app);
+                profileFor = panel(app); // the process computed its profile at start
+                dm.registerDisplayListener(new android.hardware.display.DisplayManager.DisplayListener() {
+                    @Override
+                    public void onDisplayAdded(int displayId) {
+                    }
+
+                    @Override
+                    public void onDisplayRemoved(int displayId) {
+                    }
+
+                    @Override
+                    public void onDisplayChanged(int displayId) {
+                        if (displayId != android.view.Display.DEFAULT_DISPLAY) return;
+                        // A swap changes size and density in several steps: act once it settled.
+                        main.removeCallbacks(refresh);
+                        main.postDelayed(refresh, 300);
+                    }
+                }, main);
+            }
+        });
+    }
+
+    // The main display's panel, whichever way it is turned: {short side, long side, dpi}.
+    // A rotation alone is not a new panel (LG's home handles rotation itself).
+    private static int[] panel(Context c) {
+        int[] m = mainDisplay(c);
+        return m == null ? null : new int[] {Math.min(m[0], m[1]), Math.max(m[0], m[1]), m[2]};
+    }
+
+    private static void refreshProfile(ClassLoader cl, Context app) {
+        int[] now = panel(app);
+        if (now == null || java.util.Arrays.equals(now, profileFor)) return;
+        try {
+            Object holder = XposedHelpers.getStaticObjectField(XposedHelpers.findClass(IDP, cl), "INSTANCE");
+            Object profile = XposedHelpers.callMethod(holder, "getNoCreate");
+            if (profile == null) return; // not built yet: it will be built for this display
+            onConfigChanged.invoke(profile, app);
+            profileFor = now;
+            for (android.app.Activity a : recents.toArray(new android.app.Activity[0])) {
+                if (a == null || a.isDestroyed()) continue;
+                XposedHelpers.callMethod(a, "onHandleConfigChanged");
+            }
+            android.util.Log.i("GoDaijishou", "home profile refreshed for main display "
+                    + now[0] + "x" + now[1] + " " + now[2] + "dpi");
+        } catch (Throwable t) {
+            ModuleLog.w(t);
+        }
     }
 
     // --- Second screen gestures after a switch ---
@@ -348,6 +463,7 @@ final class TopHomeHook {
         // Edit mode's button bar (widgets, wallpaper, home settings...): the swivel home pads it
         // by 567px on each side in landscape, made for the 2460px top screen. On the 1240px
         // panel that left the buttons a sliver and every label wrapped letter by letter.
+        Class<?> launcherClass = XposedHelpers.findClassIfExists("com.android.launcher3.Launcher", cl);
         XC_MethodHook barPadding = new XC_MethodHook() {
             @Override
             protected void afterHookedMethod(MethodHookParam param) {
@@ -355,6 +471,8 @@ final class TopHomeHook {
                 if (!(launcher instanceof android.app.Activity)) {
                     launcher = XposedHelpers.getObjectField(param.thisObject, "mActivity");
                 }
+                // LauncherRootView also roots quickstep's recents screen, which has no edit bar.
+                if (launcherClass == null || !launcherClass.isInstance(launcher)) return;
                 Object bar = XposedHelpers.callMethod(launcher, "getLGOverviewPanel");
                 if (!(bar instanceof android.view.View)) return;
                 android.view.View v = (android.view.View) bar;
@@ -363,7 +481,6 @@ final class TopHomeHook {
                 }
             }
         };
-        Class<?> launcherClass = XposedHelpers.findClassIfExists("com.android.launcher3.Launcher", cl);
         if (launcherClass != null) XposedBridge.hookAllMethods(launcherClass, "showOverviewMode", barPadding);
         Class<?> rootView = XposedHelpers.findClassIfExists("com.android.launcher3.LauncherRootView", cl);
         if (rootView != null) XposedBridge.hookAllMethods(rootView, "updateOverViewPanelPadding", barPadding);
