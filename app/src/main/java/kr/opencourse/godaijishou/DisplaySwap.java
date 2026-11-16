@@ -298,6 +298,7 @@ final class DisplaySwap {
         // for nothing would only risk it.
         if (!swapped && !DisplaySwap.swapped) return;
         if (swapped && DisplaySwap.swapped) return;
+        MainScreen.quietTransitions(1500);
         try {
             synchronized (lock) {
                 if (topAddress == null && !readAddresses(m)) return;

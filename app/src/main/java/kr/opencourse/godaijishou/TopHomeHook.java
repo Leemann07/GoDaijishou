@@ -68,6 +68,7 @@ final class TopHomeHook {
         installSecondScreenGestures(cl);
         safely(() -> installProfileRefresh(cl));
         safely(() -> installLabelsBelow(cl));
+        safely(() -> installFullIcons(cl));
         safely(() -> installFreshLayout(cl));
         for (String name : new String[] {POSTURE, DISPLAY_HELPER}) {
             Class<?> c = XposedHelpers.findClassIfExists(name, cl);
@@ -205,8 +206,6 @@ final class TopHomeHook {
                 if (a == null || a.isDestroyed()) continue;
                 XposedHelpers.callMethod(a, "onHandleConfigChanged");
             }
-            android.util.Log.i("GoDaijishou", "home profile refreshed for main display "
-                    + now[0] + "x" + now[1] + " " + now[2] + "dpi");
         } catch (Throwable t) {
             ModuleLog.w(t);
         }
@@ -661,6 +660,215 @@ final class TopHomeHook {
             ModuleLog.w(t);
             return null;
         }
+    }
+
+    // --- Full-size icons on the second screen's panel ---
+
+    /**
+     * LG's home stacks the rows (icon + two label lines + padding) and, when they are taller
+     * than the workspace, shrinks every icon (home and dock) by that ratio. The second screen's
+     * panel as the main display is short (1080x1240), so the icons were always shrunk, and a
+     * larger display size shrank them further instead of enlarging them. In main screen mode,
+     * either orientation, the label takes one line (long names end in an ellipsis) and the
+     * icons keep LG's own size, shrunk only where a row cannot hold one with its label and
+     * the space between rows. Dock icons stay within the dock.
+     */
+    private static void installFullIcons(ClassLoader cl) {
+        Class<?> lgProfile = XposedHelpers.findClassIfExists("com.lge.launcher3.profile.LGDeviceProfile", cl);
+        if (lgProfile == null) return;
+        // LG lays landscape out for the swivel's sideways top screen (its own dock, folder and
+        // cell sizes). Main screen mode's sideways panel is close to square (1240x1080): its
+        // landscape profile is worked out as portrait is, at the landscape size.
+        XposedBridge.hookAllConstructors(lgProfile, new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                Object[] a = param.args;
+                if (a.length < 8 || !(a[0] instanceof Context) || !Boolean.TRUE.equals(a[6])
+                        || !Boolean.FALSE.equals(a[7]) || !mainScreenMode((Context) a[0])) return;
+                a[6] = false;
+                // The usable size is taken from (min, max) by orientation: swapped, the
+                // portrait reading gives the landscape size.
+                Object min = a[2];
+                a[2] = a[3];
+                a[3] = min;
+            }
+        });
+        // The open folder would still be inflated from LG's landscape layout (a side button
+        // column, sized for the swivel's top screen), which only its landscape code measures:
+        // it is inflated from the portrait one, the layout the profile is worked out for.
+        Class<?> folder = XposedHelpers.findClassIfExists("com.android.launcher3.folder.Folder", cl);
+        if (folder != null) {
+            XposedBridge.hookAllMethods(folder, "fromXml", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    if (param.args.length < 1 || !(param.args[0] instanceof android.app.Activity)) return;
+                    android.app.Activity a = (android.app.Activity) param.args[0];
+                    android.content.res.Configuration conf = a.getResources().getConfiguration();
+                    if (conf.orientation != android.content.res.Configuration.ORIENTATION_LANDSCAPE
+                            || !mainScreenMode(a)) return;
+                    int id = a.getResources().getIdentifier(folderLayout(cl), "layout", PKG);
+                    if (id == 0) return;
+                    android.content.res.Configuration port = new android.content.res.Configuration(conf);
+                    port.orientation = android.content.res.Configuration.ORIENTATION_PORTRAIT;
+                    port.screenWidthDp = conf.screenHeightDp;
+                    port.screenHeightDp = conf.screenWidthDp;
+                    try (android.content.res.XmlResourceParser parser =
+                                 a.createConfigurationContext(port).getResources().getLayout(id)) {
+                        param.setResult(a.getLayoutInflater().inflate(parser, null));
+                    }
+                }
+            });
+        }
+        // Portrait folder rows are as tall as a home cell, not fitted to the height: sideways,
+        // the last row was cut off (a folder page does not scroll). The rows share what is
+        // left under the bars, title and footer, as LG's own landscape folder does.
+        XposedBridge.hookAllMethods(lgProfile, "updateIconSize", new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                Object p = param.thisObject;
+                if (!(param.args[0] instanceof Context) || !mainScreenMode((Context) param.args[0])
+                        || XposedHelpers.getIntField(p, "widthPx") <= XposedHelpers.getIntField(p, "heightPx")) return;
+                android.content.res.Resources r = ((Context) param.args[0]).getResources();
+                int title = r.getIdentifier("folder_title_height", "dimen", PKG);
+                int footer = r.getIdentifier("folder_footer_height", "dimen", PKG);
+                int rows = XposedHelpers.getIntField(XposedHelpers.getObjectField(p, "inv"), "numFolderRows");
+                if (rows <= 0) return;
+                int space = XposedHelpers.getIntField(p, "availableHeightPx")
+                        - XposedHelpers.getIntField(p, "navibarSizePx")
+                        - XposedHelpers.getIntField(p, "statusbarSizePx")
+                        - (title == 0 ? 0 : r.getDimensionPixelSize(title))
+                        - (footer == 0 ? 0 : r.getDimensionPixelSize(footer));
+                int row = space / rows;
+                if (row > 0 && row < XposedHelpers.getIntField(p, "folderCellHeightPx")) {
+                    XposedHelpers.setIntField(p, "folderCellHeightPx", row);
+                }
+            }
+        });
+        XposedBridge.hookAllMethods(lgProfile, "updateAvailableDimensions", new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                Object p = param.thisObject;
+                if (param.args.length < 3 || XposedHelpers.getBooleanField(p, "isTablet")) return;
+                Context c = (Context) param.args[0];
+                if (!mainScreenMode(c)) return;
+                int padding = XposedHelpers.getIntField(p, "iconDrawablePaddingOriginalPx");
+                Object res = param.args[2], metrics = param.args[1];
+                XposedHelpers.callMethod(p, "updateIconSize", c, 1f, padding, res, metrics);
+                // LG's own icon size at scale 1.
+                int icon = XposedHelpers.getIntField(p, "iconSizePx");
+                if (XposedHelpers.getIntField(p, "widthPx") > XposedHelpers.getIntField(p, "heightPx")) {
+                    roomierSideways(p, icon);
+                }
+                // The cell the workspace actually gives each item: LG's getCellSize leaves out
+                // the nav bar, which the workspace keeps clear below its rows as well.
+                android.graphics.Point size = (android.graphics.Point) XposedHelpers.callMethod(p, "getCellSize");
+                int nav = XposedHelpers.getIntField(p, "heightPx") - XposedHelpers.getIntField(p, "availableHeightPx")
+                        - dimen(c.getResources(), "status_bar_height");
+                int rows = XposedHelpers.getIntField(p, "numRows");
+                if (nav > 0 && rows > 0) size.y -= Math.round((float) nav / rows);
+                if (icon <= 0 || size.x <= 0 || size.y <= 0) {
+                    param.setResult(null);
+                    return;
+                }
+                // The label is drawn at LG's text size times the font scale (LG's own cell math
+                // leaves the scale out): one line's full height, descenders (g, y) included.
+                int text = XposedHelpers.getIntField(p, "iconTextSizePx");
+                android.graphics.Paint paint = new android.graphics.Paint();
+                paint.setTextSize(text * c.getResources().getConfiguration().fontScale);
+                android.graphics.Paint.FontMetrics fm = paint.getFontMetrics();
+                float line = fm.bottom - fm.top;
+                // LG's own icon size whatever the grid (as in other home apps), smaller only
+                // where a row has no room for it: LG's icon-to-label gap above the one-line
+                // label and the same gap below it, between the rows.
+                float fit = Math.min((size.y - 2 * padding - line) / icon, 0.8f * size.x / icon);
+                float scale = Math.max(0f, Math.min(1f, fit));
+                // A label that has no room is left out, never cut off.
+                boolean label = icon * scale + padding + line <= size.y;
+                XposedHelpers.setIntField(p, "iconTextMaxLines", 1);
+                XposedHelpers.callMethod(p, "updateIconSize", c, scale, padding, res, metrics);
+                XposedHelpers.setIntField(p, "iconTextSizePx", label ? text : 0);
+                // The dock has its own height: its icons keep LG's own size within it (at most
+                // 80% of the bar, LG's rule) instead of shrinking with the workspace's rows.
+                int bar = XposedHelpers.getIntField(p, "hotseatBarHeightPx");
+                if (bar > 0) XposedHelpers.setIntField(p, "hotseatIconSizePx", Math.min(icon, Math.round(bar * 0.8f)));
+                param.setResult(null);
+            }
+        });
+        installGridPresets(cl);
+    }
+
+    private static final String LG_TOP_MARGIN = "wingcustom_top_margin";
+
+    /**
+     * Sideways, the profile worked out as portrait keeps portrait's top margin and dock, made
+     * for a panel 160 px taller: the rows were left little room. The top margin takes a
+     * quarter of LG's (LG's value kept, never compounding), and the dock no more than a
+     * full-size icon needs (LG's dock icons take at most 80% of it).
+     */
+    private static void roomierSideways(Object p, int icon) {
+        Object kept = XposedHelpers.getAdditionalInstanceField(p, LG_TOP_MARGIN);
+        int top = kept instanceof Integer ? (Integer) kept : 0;
+        if (top <= 0) {
+            top = XposedHelpers.getIntField(p, "desiredWorkspaceTopMarginPx");
+            if (top > 0) XposedHelpers.setAdditionalInstanceField(p, LG_TOP_MARGIN, top);
+        }
+        if (top > 0) XposedHelpers.setIntField(p, "desiredWorkspaceTopMarginPx", top / 4);
+        int bar = XposedHelpers.getIntField(p, "hotseatBarHeightPx");
+        int need = Math.round(icon / 0.8f);
+        if (bar > need && need > 0) XposedHelpers.setIntField(p, "hotseatBarHeightPx", need);
+    }
+
+    // The open folder's layout, as Folder.fromXml picks it.
+    private static String folderLayout(ClassLoader cl) {
+        Object ux10 = XposedHelpers.callStaticMethod(
+                XposedHelpers.findClass("com.lge.launcher3.util.Utilities", cl), "isLGUI10_0");
+        return Boolean.TRUE.equals(ux10) ? "user_folder_ux10_0" : "user_folder";
+    }
+
+    private static final String GRID_PRESETS = "config_dynamic_grid_preset";
+    // The home's grids. The edit mode's grid panel has exactly five slots: 4x3 takes the place
+    // of 5x6, the densest.
+    private static final String[] GRIDS = {"4x3", "4x4", "4x5", "4x6", "5x5"};
+    private static int gridPresetsId;
+
+    /**
+     * LG's grid choices (settings dialog, edit mode panel, and the check that a saved grid is
+     * still valid) all come from one string array. It lists 4x3 for big icons, on either
+     * screen: the same list in both modes also keeps LG's check from putting a saved 4x3 back
+     * to the default grid after a trip to the other mode.
+     */
+    private static void installGridPresets(ClassLoader cl) {
+        // LG reads the landscape dock's height per grid (dev_prof_hotseat_height_4x4_..._land);
+        // 4x3 has none, which gave a zero-height dock: it takes 4x4's.
+        Class<?> lgProfile = XposedHelpers.findClassIfExists("com.lge.launcher3.profile.LGDeviceProfile", cl);
+        if (lgProfile != null) {
+            XposedBridge.hookAllMethods(lgProfile, "getLandscapeHotseatBarSizeByDynamicGrid", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                    Object[] a = param.args;
+                    if (!(param.getResult() instanceof Integer) || (Integer) param.getResult() > 0
+                            || a.length < 4 || !(a[2] instanceof Integer) || (Integer) a[2] == 4) return;
+                    Object[] four = a.clone();
+                    four[2] = 4; // rows
+                    four[3] = 4; // columns
+                    param.setResult(XposedBridge.invokeOriginalMethod(param.method, param.thisObject, four));
+                }
+            });
+        }
+        XposedBridge.hookAllMethods(android.content.res.Resources.class, "getStringArray", new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                if (param.args.length != 1 || !(param.args[0] instanceof Integer)) return;
+                android.content.res.Resources r = (android.content.res.Resources) param.thisObject;
+                if (gridPresetsId == 0) gridPresetsId = r.getIdentifier(GRID_PRESETS, "array", PKG);
+                if ((Integer) param.args[0] != gridPresetsId || gridPresetsId == 0) return;
+                param.setResult(GRIDS.clone());
+            }
+        });
+    }
+
+    private static boolean mainScreenMode(Context c) {
+        return android.provider.Settings.Global.getInt(c.getContentResolver(), SwivelFold.KEY_SWAPPED, 0) == 1;
     }
 
     // --- Home grid 4x4, once ---

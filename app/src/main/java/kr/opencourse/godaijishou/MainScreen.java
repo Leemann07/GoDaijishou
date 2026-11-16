@@ -207,6 +207,17 @@ final class MainScreen {
 
     // Set while bringAppsToMain moves tasks (synchronously, on this thread).
     private static volatile boolean movingApps;
+    // Until then no transition either: the panel itself moving between displays.
+    private static volatile long quietUntil;
+
+    /**
+     * The panel moves between display 0 and display 4 (DisplaySwap): LG's transition put a
+     * screenshot of the display left behind on the panel, in the panel's own (portrait)
+     * orientation, for a frame. None for a moment around the move.
+     */
+    static void quietTransitions(long ms) {
+        quietUntil = android.os.SystemClock.uptimeMillis() + ms;
+    }
 
     /**
      * LG animates every task moved between displays: a screenshot of the old display scaled
@@ -220,7 +231,7 @@ final class MainScreen {
                 "prepareMultiDisplayTransition", new de.robv.android.xposed.XC_MethodHook() {
                     @Override
                     protected void beforeHookedMethod(MethodHookParam param) {
-                        if (movingApps) param.setResult(null);
+                        if (movingApps || android.os.SystemClock.uptimeMillis() < quietUntil) param.setResult(null);
                     }
                 });
         // Unlocking starts: cover the second screen until the swap takes over.
@@ -230,11 +241,77 @@ final class MainScreen {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) {
                         Handler h = SystemSettings.handler();
-                        if (h != null && swapsOnUnlock()) h.postAtFrontOfQueue(() -> showCover(MainModule.SECOND_SCREEN_DISPLAY_ID, COVER_MAX_MS));
+                        if (h != null && swapsOnUnlock()) h.postAtFrontOfQueue(() -> showCover(COVER_MAX_MS, MainModule.SECOND_SCREEN_DISPLAY_ID));
                     }
                 });
         try {
             installNoPartialWake(cl);
+        } catch (Throwable t) {
+            ModuleLog.w(t);
+        }
+        try {
+            installBarsFromSecondScreen(cl);
+        } catch (Throwable t) {
+            ModuleLog.w(t);
+        }
+    }
+
+    // --- Status bar hidden on the second screen, not on the main one ---
+
+    private static final String FROM_SECOND = "wingcustom_from_second_screen";
+
+    /**
+     * An app on the second screen (no status bar there) has its status bar hidden, and keeps
+     * it so when its window comes to display 0 in main screen mode: it showed full screen, and
+     * the first swipe up only revealed the bars instead of going home. A window that moves from
+     * the second screen to the main one is told to show the status bar (what the system tells
+     * an app for the keyboard), once on the move and once more on its first request there
+     * (it may still be sending the old one). Hidden again after that is the app's own choice
+     * (a game, a video).
+     */
+    private static void installBarsFromSecondScreen(ClassLoader cl) {
+        Class<?> window = de.robv.android.xposed.XposedHelpers.findClass("com.android.server.wm.WindowState", cl);
+        de.robv.android.xposed.XposedBridge.hookAllMethods(window, "onDisplayChanged",
+                new de.robv.android.xposed.XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        // The window is already under the new display here; its input handle
+                        // still names the old one (updated later in this method).
+                        try {
+                            Object handle = de.robv.android.xposed.XposedHelpers.getObjectField(param.thisObject, "mInputWindowHandle");
+                            param.setObjectExtra("from", de.robv.android.xposed.XposedHelpers.callMethod(handle, "getDisplayId"));
+                        } catch (Throwable t) {
+                            ModuleLog.w(t);
+                        }
+                    }
+
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (!DisplaySwap.isSwapped()) return;
+                        Object from = param.getObjectExtra("from");
+                        int to = (int) de.robv.android.xposed.XposedHelpers.callMethod(param.thisObject, "getDisplayId");
+                        if (!Integer.valueOf(MainModule.SECOND_SCREEN_DISPLAY_ID).equals(from)
+                                || to != android.view.Display.DEFAULT_DISPLAY) return;
+                        de.robv.android.xposed.XposedHelpers.setAdditionalInstanceField(param.thisObject, FROM_SECOND, true);
+                        showStatusBar(param.thisObject);
+                    }
+                });
+        de.robv.android.xposed.XposedBridge.hookAllMethods(window, "setRequestedVisibilities",
+                new de.robv.android.xposed.XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        Object w = param.thisObject;
+                        if (!Boolean.TRUE.equals(de.robv.android.xposed.XposedHelpers.getAdditionalInstanceField(w, FROM_SECOND))) return;
+                        de.robv.android.xposed.XposedHelpers.removeAdditionalInstanceField(w, FROM_SECOND);
+                        showStatusBar(w);
+                    }
+                });
+    }
+
+    private static void showStatusBar(Object window) {
+        try {
+            de.robv.android.xposed.XposedHelpers.callMethod(window, "showInsets",
+                    android.view.WindowInsets.Type.statusBars(), false);
         } catch (Throwable t) {
             ModuleLog.w(t);
         }
@@ -277,8 +354,9 @@ final class MainScreen {
     // takes display 4 (and the window) away, and in any case it goes after COVER_MAX_MS.
 
     private static final long COVER_MAX_MS = 2500;
-    private static View cover;
-    private static WindowManager coverWm;
+    // Covers up now, each with the window manager of its display.
+    private static final java.util.List<View> covers = new java.util.ArrayList<>();
+    private static final java.util.List<WindowManager> coverWms = new java.util.ArrayList<>();
     private static final Runnable HIDE_COVER = MainScreen::hideCover;
 
     private static boolean swapsOnUnlock() {
@@ -287,48 +365,54 @@ final class MainScreen {
                 && !DisplaySwap.isSwapped();
     }
 
-    private static void showCover(int displayId, long maxMs) {
+    /** Black covers over the given displays (ones that do not exist are skipped). */
+    private static void showCover(long maxMs, int... displayIds) {
         hideCover();
-        try {
-            Context system = SystemSettings.context();
-            android.hardware.display.DisplayManager dm = system.getSystemService(android.hardware.display.DisplayManager.class);
-            Display target = dm.getDisplay(displayId);
-            if (target == null) return;
-            Context ui = system.createDisplayContext(target);
-            View v = new View(ui);
-            v.setBackgroundColor(0xFF000000);
-            WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
-                    WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
-                    2010 /* TYPE_SYSTEM_ERROR */,
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                            | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-                            | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-                            | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-                    android.graphics.PixelFormat.OPAQUE);
-            lp.setTitle("WingCustom:UnlockCover");
-            lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
-            lp.windowAnimations = 0;
-            coverWm = ui.getSystemService(WindowManager.class);
-            coverWm.addView(v, lp);
-            cover = v;
-            SystemSettings.handler().postDelayed(HIDE_COVER, maxMs);
-        } catch (Throwable t) {
-            ModuleLog.w(t);
-            cover = null;
+        Context system = SystemSettings.context();
+        android.hardware.display.DisplayManager dm = system.getSystemService(android.hardware.display.DisplayManager.class);
+        for (int displayId : displayIds) {
+            try {
+                Display target = dm.getDisplay(displayId);
+                if (target == null) continue;
+                Context ui = system.createDisplayContext(target);
+                View v = new View(ui);
+                v.setBackgroundColor(0xFF000000);
+                // TYPE_VOLUME_OVERLAY (hidden), as the battery bar: a system error window
+                // never showed on display 4.
+                WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                        WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
+                        2020,
+                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                                | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                                | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                                | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                        android.graphics.PixelFormat.OPAQUE);
+                lp.setTitle("WingCustom:UnlockCover");
+                lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
+                lp.windowAnimations = 0;
+                WindowManager wm = ui.getSystemService(WindowManager.class);
+                wm.addView(v, lp);
+                covers.add(v);
+                coverWms.add(wm);
+            } catch (Throwable t) {
+                ModuleLog.w(t);
+            }
         }
+        if (!covers.isEmpty()) SystemSettings.handler().postDelayed(HIDE_COVER, maxMs);
     }
 
     private static void hideCover() {
-        View v = cover;
-        cover = null;
         Handler h = SystemSettings.handler();
         if (h != null) h.removeCallbacks(HIDE_COVER);
-        if (v == null || coverWm == null) return;
-        try {
-            coverWm.removeViewImmediate(v);
-        } catch (Throwable t) {
-            ModuleLog.w(t); // gone with display 4 already
+        for (int i = 0; i < covers.size(); i++) {
+            try {
+                coverWms.get(i).removeViewImmediate(covers.get(i));
+            } catch (Throwable t) {
+                ModuleLog.w(t); // gone with its display already
+            }
         }
+        covers.clear();
+        coverWms.clear();
     }
 
     /**
@@ -414,6 +498,48 @@ final class MainScreen {
         if (SystemSettings.mainReady) {
             switchOn();
         }
+    }
+
+    // The switch waits for the cover's frame to reach the screen, at most COVER_WAIT_MS; the
+    // new display's first frames are up by the time the cover goes (SWAP_COVER_MS).
+    private static final long COVER_WAIT_MS = 300, SWAP_COVER_MS = 400;
+
+    /**
+     * The keys' switch. When the panel moves between display 0 and display 4 it shows a frame
+     * or two in its own (portrait) orientation, cut off: of the display it leaves, or (to the
+     * main screen) of display 0 as the top panel had it. A black cover goes over both
+     * displays, and the switch waits until every cover is on screen, so those frames are
+     * black. The covers go shortly after the switch (display 4's with it when swapped).
+     * Locked or asleep it switches as before (no cover).
+     */
+    static void toggleCovered() {
+        Handler h = SystemSettings.handler();
+        if (h == null || !present()) {
+            toggle();
+            return;
+        }
+        boolean was = DisplaySwap.isSwapped();
+        boolean[] done = {false};
+        Runnable go = () -> {
+            if (done[0]) return;
+            done[0] = true;
+            toggle();
+            if (DisplaySwap.isSwapped() == was) {
+                hideCover(); // nothing moved (the "keep?" card): no black
+            } else {
+                h.removeCallbacks(HIDE_COVER);
+                h.postDelayed(HIDE_COVER, SWAP_COVER_MS);
+            }
+        };
+        showCover(COVER_MAX_MS, Display.DEFAULT_DISPLAY, MainModule.SECOND_SCREEN_DISPLAY_ID);
+        int[] waiting = {covers.size()};
+        for (View v : covers) {
+            // Called once that cover's first frame is presented (not just drawn).
+            v.getViewTreeObserver().registerFrameCommitCallback(() -> h.post(() -> {
+                if (--waiting[0] <= 0) go.run();
+            }));
+        }
+        h.postDelayed(go, covers.isEmpty() ? 0 : COVER_WAIT_MS);
     }
 
     private static void switchOn() {

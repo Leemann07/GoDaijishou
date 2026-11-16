@@ -41,7 +41,7 @@ final class SafetyEscape {
                         boolean bothBefore = upDown && downDown;
                         if (code == KeyEvent.KEYCODE_VOLUME_UP) upDown = down;
                         else downDown = down;
-                        if (!bothBefore && upDown && downDown) post(MainScreen::toggle);
+                        if (!bothBefore && upDown && downDown) post(MainScreen::toggleCovered);
                         watchHold(code, down, e.getRepeatCount());
                     }
                 });
