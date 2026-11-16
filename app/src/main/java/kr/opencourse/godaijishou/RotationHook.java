@@ -41,10 +41,6 @@ final class RotationHook {
                         if (!setupDone) ensureSetup(param.thisObject);
                         // Second screen: the toggle decides, whatever the app asks for.
                         if (SystemSettings.forceRotation && isSecondScreen(param.thisObject)) {
-                            // Except the lock screen's own orientation: forced sideways, LG's
-                            // portrait PIN pad lost its right column and took touches as
-                            // another key.
-                            if (keyguardLocked() && isFixedOrientation((Integer) param.args[0])) return;
                             param.setResult(forcedRotation());
                             return;
                         }
@@ -121,17 +117,6 @@ final class RotationHook {
             int id = (int) XposedHelpers.callMethod(displayContent, "getDisplayId");
             if (DisplaySwap.isSwapped()) return id == android.view.Display.DEFAULT_DISPLAY;
             return id == MainModule.SECOND_SCREEN_DISPLAY_ID;
-        } catch (Throwable t) {
-            ModuleLog.w(t);
-            return false;
-        }
-    }
-
-    // The policy's own flag (no IPC): safe under the window manager's lock.
-    private static boolean keyguardLocked() {
-        try {
-            Object policy = XposedHelpers.getObjectField(windowManagerService, "mPolicy");
-            return (boolean) XposedHelpers.callMethod(policy, "isKeyguardLocked");
         } catch (Throwable t) {
             ModuleLog.w(t);
             return false;

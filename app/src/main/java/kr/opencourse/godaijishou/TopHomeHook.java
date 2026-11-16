@@ -719,6 +719,31 @@ final class TopHomeHook {
                 }
             });
         }
+        // Portrait folder rows are as tall as a home cell, not fitted to the height: sideways,
+        // the last row was cut off (a folder page does not scroll). The rows share what is
+        // left under the bars, title and footer, as LG's own landscape folder does.
+        XposedBridge.hookAllMethods(lgProfile, "updateIconSize", new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                Object p = param.thisObject;
+                if (!(param.args[0] instanceof Context) || !mainScreenMode((Context) param.args[0])
+                        || XposedHelpers.getIntField(p, "widthPx") <= XposedHelpers.getIntField(p, "heightPx")) return;
+                android.content.res.Resources r = ((Context) param.args[0]).getResources();
+                int title = r.getIdentifier("folder_title_height", "dimen", PKG);
+                int footer = r.getIdentifier("folder_footer_height", "dimen", PKG);
+                int rows = XposedHelpers.getIntField(XposedHelpers.getObjectField(p, "inv"), "numFolderRows");
+                if (rows <= 0) return;
+                int space = XposedHelpers.getIntField(p, "availableHeightPx")
+                        - XposedHelpers.getIntField(p, "navibarSizePx")
+                        - XposedHelpers.getIntField(p, "statusbarSizePx")
+                        - (title == 0 ? 0 : r.getDimensionPixelSize(title))
+                        - (footer == 0 ? 0 : r.getDimensionPixelSize(footer));
+                int row = space / rows;
+                if (row > 0 && row < XposedHelpers.getIntField(p, "folderCellHeightPx")) {
+                    XposedHelpers.setIntField(p, "folderCellHeightPx", row);
+                }
+            }
+        });
         XposedBridge.hookAllMethods(lgProfile, "updateAvailableDimensions", new XC_MethodHook() {
             @Override
             protected void beforeHookedMethod(MethodHookParam param) {

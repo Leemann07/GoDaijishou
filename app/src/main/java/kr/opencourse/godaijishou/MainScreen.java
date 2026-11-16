@@ -275,7 +275,14 @@ final class MainScreen {
                 new de.robv.android.xposed.XC_MethodHook() {
                     @Override
                     protected void beforeHookedMethod(MethodHookParam param) {
-                        param.setObjectExtra("from", de.robv.android.xposed.XposedHelpers.callMethod(param.thisObject, "getDisplayId"));
+                        // The window is already under the new display here; its input handle
+                        // still names the old one (updated later in this method).
+                        try {
+                            Object handle = de.robv.android.xposed.XposedHelpers.getObjectField(param.thisObject, "mInputWindowHandle");
+                            param.setObjectExtra("from", de.robv.android.xposed.XposedHelpers.callMethod(handle, "getDisplayId"));
+                        } catch (Throwable t) {
+                            ModuleLog.w(t);
+                        }
                     }
 
                     @Override
