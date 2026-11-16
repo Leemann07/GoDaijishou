@@ -732,7 +732,7 @@ final class TopHomeHook {
 
     /**
      * LG's landscape dock (made for the swivel's sideways screen) is a short bar: its icons
-     * stayed far smaller than the home's. In main screen mode it takes 1.4 times LG's height
+     * stayed far smaller than the home's. In main screen mode it takes 1.5 times LG's height
      * (from LG's own value each time, never compounding), a little of the workspace's height.
      */
     private static void tallerDock(Object p) {
@@ -740,7 +740,7 @@ final class TopHomeHook {
         int bar = kept instanceof Integer ? (Integer) kept : XposedHelpers.getIntField(p, "hotseatBarHeightPx");
         if (bar <= 0) return;
         XposedHelpers.setAdditionalInstanceField(p, LG_DOCK_HEIGHT, bar);
-        XposedHelpers.setIntField(p, "hotseatBarHeightPx", Math.round(bar * 1.4f));
+        XposedHelpers.setIntField(p, "hotseatBarHeightPx", Math.round(bar * 1.5f));
     }
 
     // {icon size in percent, labels shown 1/0} from the app's settings; null until read.
@@ -809,6 +809,23 @@ final class TopHomeHook {
      * screen): 4x3 stays valid in both modes.
      */
     private static void installGridPresets(ClassLoader cl) {
+        // LG reads the landscape dock's height per grid (dev_prof_hotseat_height_4x4_..._land);
+        // 4x3 has none, which gave a zero-height dock: it takes 4x4's.
+        Class<?> lgProfile = XposedHelpers.findClassIfExists("com.lge.launcher3.profile.LGDeviceProfile", cl);
+        if (lgProfile != null) {
+            XposedBridge.hookAllMethods(lgProfile, "getLandscapeHotseatBarSizeByDynamicGrid", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                    Object[] a = param.args;
+                    if (!(param.getResult() instanceof Integer) || (Integer) param.getResult() > 0
+                            || a.length < 4 || !(a[2] instanceof Integer) || (Integer) a[2] == 4) return;
+                    Object[] four = a.clone();
+                    four[2] = 4; // rows
+                    four[3] = 4; // columns
+                    param.setResult(XposedBridge.invokeOriginalMethod(param.method, param.thisObject, four));
+                }
+            });
+        }
         Class<?> profile = XposedHelpers.findClassIfExists("com.android.launcher3.DeviceProfile", cl);
         if (profile != null) {
             XposedBridge.hookAllMethods(profile, "checkValidGridSize", new XC_MethodHook() {
