@@ -59,6 +59,11 @@ public class MainModule implements IXposedHookLoadPackage {
             safely(() -> FingerprintHook.install(cl));
             safely(() -> TouchBypassHook.install(cl));
             safely(() -> DisplaySwap.install(cl));
+            safely(() -> SwivelPosture.install(cl));
+            safely(() -> SwivelPosture.installDefaultGroup(cl));
+            safely(() -> SwivelPosture.installNoFocusOnTop(cl));
+            safely(() -> SwivelPosture.installSubTouch(cl));
+            safely(() -> SwivelPosture.installPanelPower(cl));
             safely(() -> SafetyEscape.install(cl));
             safely(() -> MainScreen.install(cl));
         } else if (!BuildConfig.APPLICATION_ID.equals(pkg)) {

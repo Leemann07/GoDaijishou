@@ -100,6 +100,20 @@ final class FingerprintHook {
             ModuleLog.w(t);
             return;
         }
+        // With no sensors listed, FingerprintManager.isPowerbuttonFps() reads the first sensor's
+        // type from null; asked at boot (SideFpsEventHandler), it killed system_server now and
+        // then and the phone booted twice. No sensor: not a power button sensor either.
+        try {
+            XposedBridge.hookAllMethods(XposedHelpers.findClass("android.hardware.fingerprint.FingerprintManager", cl),
+                    "isPowerbuttonFps", new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            if (off()) param.setResult(false);
+                        }
+                    });
+        } catch (Throwable t) {
+            ModuleLog.w(t);
+        }
         List<Class<?>> classes = new ArrayList<>();
         classes.add(service);
         Collections.addAll(classes, service.getDeclaredClasses());

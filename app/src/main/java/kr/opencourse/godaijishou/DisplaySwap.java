@@ -241,6 +241,34 @@ final class DisplaySwap {
     }
 
     /** Whether display 0 is the second screen's panel right now (TopPanel keeps its hands off). */
+    /**
+     * Display 0's display group assigned again (SwivelPosture.installDefaultGroup decides),
+     * then the usual update, which tells the power manager. Groups are otherwise assigned only
+     * when a display's info changes.
+     */
+    static void regroup() {
+        Object m = mapper, lock = syncRoot;
+        if (m == null || lock == null || !swapped) return;
+        try {
+            synchronized (lock) {
+                Object display = XposedHelpers.callMethod(m, "getDisplayLocked", 0);
+                if (display == null) return;
+                XposedHelpers.callMethod(m, "assignDisplayGroupLocked", display);
+                XposedHelpers.callMethod(m, "updateLogicalDisplaysLocked");
+            }
+        } catch (Throwable t) {
+            android.util.Log.w("GoDaijishou", "regroup", t);
+        }
+    }
+
+    /** Whether the device is display 0's panel (caller holds the display manager's lock). */
+    static boolean isDisplayZeroDevice(Object device) {
+        Object m = mapper;
+        if (m == null || device == null) return false;
+        Object display = XposedHelpers.callMethod(m, "getDisplayLocked", 0);
+        return display != null && XposedHelpers.callMethod(display, "getPrimaryDisplayDeviceLocked") == device;
+    }
+
     static boolean isSwapped() {
         return swapped;
     }
@@ -348,6 +376,7 @@ final class DisplaySwap {
         } catch (Throwable t) {
             ModuleLog.w(t);
         }
+        SwivelPosture.swapChanged();
     }
 
     /**
