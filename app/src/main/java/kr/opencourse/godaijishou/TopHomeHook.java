@@ -796,17 +796,16 @@ final class TopHomeHook {
     }
 
     private static final String GRID_PRESETS = "config_dynamic_grid_preset";
-    // Main screen mode's grids. The edit mode's grid panel has exactly five slots: 4x3 takes
-    // the place of 5x6, too dense for this panel.
-    private static final String[] MAIN_SCREEN_GRIDS = {"4x3", "4x4", "4x5", "4x6", "5x5"};
+    // The home's grids. The edit mode's grid panel has exactly five slots: 4x3 takes the place
+    // of 5x6, the densest.
+    private static final String[] GRIDS = {"4x3", "4x4", "4x5", "4x6", "5x5"};
     private static int gridPresetsId;
 
     /**
      * LG's grid choices (settings dialog, edit mode panel, and the check that a saved grid is
-     * still valid) all come from one string array. In main screen mode it lists 4x3 for the
-     * short panel. A home started in second screen mode does not list it, and LG's check there
-     * put a saved 4x3 back to the default 5x5 (small icons after every trip to the second
-     * screen): 4x3 stays valid in both modes.
+     * still valid) all come from one string array. It lists 4x3 for big icons, on either
+     * screen: the same list in both modes also keeps LG's check from putting a saved 4x3 back
+     * to the default grid after a trip to the other mode.
      */
     private static void installGridPresets(ClassLoader cl) {
         // LG reads the landscape dock's height per grid (dev_prof_hotseat_height_4x4_..._land);
@@ -826,17 +825,6 @@ final class TopHomeHook {
                 }
             });
         }
-        Class<?> profile = XposedHelpers.findClassIfExists("com.android.launcher3.DeviceProfile", cl);
-        if (profile != null) {
-            XposedBridge.hookAllMethods(profile, "checkValidGridSize", new XC_MethodHook() {
-                @Override
-                protected void beforeHookedMethod(MethodHookParam param) {
-                    Object p = param.thisObject;
-                    if (XposedHelpers.getIntField(p, "numColumns") == 4
-                            && XposedHelpers.getIntField(p, "numRows") == 3) param.setResult(null);
-                }
-            });
-        }
         XposedBridge.hookAllMethods(android.content.res.Resources.class, "getStringArray", new XC_MethodHook() {
             @Override
             protected void afterHookedMethod(MethodHookParam param) {
@@ -844,8 +832,7 @@ final class TopHomeHook {
                 android.content.res.Resources r = (android.content.res.Resources) param.thisObject;
                 if (gridPresetsId == 0) gridPresetsId = r.getIdentifier(GRID_PRESETS, "array", PKG);
                 if ((Integer) param.args[0] != gridPresetsId || gridPresetsId == 0) return;
-                Context app = android.app.AndroidAppHelper.currentApplication();
-                if (app != null && mainScreenMode(app)) param.setResult(MAIN_SCREEN_GRIDS.clone());
+                param.setResult(GRIDS.clone());
             }
         });
     }
