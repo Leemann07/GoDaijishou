@@ -78,6 +78,14 @@ public class MainActivity extends AppCompatActivity {
         TextView version = findViewById(R.id.tv_version);
         version.setText("v" + BuildConfig.VERSION_NAME);
         version.setOnClickListener(v -> openReleases()); // GitHub mark: the project's releases
+        // Pull down: ask GitHub now, past the few minutes the screen otherwise waits between checks.
+        androidx.swiperefreshlayout.widget.SwipeRefreshLayout swipe = findViewById(R.id.swipe_refresh);
+        swipe.setColorSchemeColors(getColor(R.color.ft_on_butter));
+        swipe.setProgressBackgroundColorSchemeColor(getColor(R.color.ft_butter));
+        swipe.setOnRefreshListener(() -> {
+            updateStatus();
+            UpdateCheck.run(this, true, this::showUpdate, () -> swipe.setRefreshing(false));
+        });
 
         // Yellow trailing dot, like the freetv logo
         SpannableString logo = new SpannableString(getString(R.string.app_title) + ".");
@@ -140,7 +148,7 @@ public class MainActivity extends AppCompatActivity {
         updateRebootNotice();
         updateStatus();
         updateLauncherRows(); // reflect apps installed/removed while we were away
-        UpdateCheck.run(this, this::showUpdate);
+        UpdateCheck.run(this, false, this::showUpdate, null);
         if (perfButtons != null) stylePerfButtons(perfButtons); // may have changed in the panel
         // The mode may have been switched with volume up + down meanwhile.
         syncModeTabs();
@@ -154,8 +162,7 @@ public class MainActivity extends AppCompatActivity {
         getWindow().setDecorFitsSystemWindows(false);
         getWindow().setNavigationBarColor(android.graphics.Color.TRANSPARENT);
         getWindow().setNavigationBarContrastEnforced(false);
-        android.view.ViewGroup scroll = (android.view.ViewGroup) ((android.view.ViewGroup)
-                findViewById(android.R.id.content)).getChildAt(0);
+        android.view.ViewGroup scroll = findViewById(R.id.scroll);
         scroll.setClipToPadding(false);
         View column = scroll.getChildAt(0);
         final int top = column.getPaddingTop(), bottom = column.getPaddingBottom();
@@ -163,6 +170,9 @@ public class MainActivity extends AppCompatActivity {
             android.graphics.Insets bars = insets.getInsets(android.view.WindowInsets.Type.systemBars()
                     | android.view.WindowInsets.Type.displayCutout());
             column.setPadding(column.getPaddingLeft(), top + bars.top, column.getPaddingRight(), bottom + bars.bottom);
+            int spinner = Math.round(64 * getResources().getDisplayMetrics().density);
+            ((androidx.swiperefreshlayout.widget.SwipeRefreshLayout) findViewById(R.id.swipe_refresh))
+                    .setProgressViewOffset(false, bars.top, bars.top + spinner);
             return insets;
         });
     }
