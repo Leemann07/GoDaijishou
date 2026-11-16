@@ -20,32 +20,24 @@ import de.robv.android.xposed.XposedHelpers;
  * - Display 4 (the top panel, off) never holds input focus: SystemUI still adds its swivel lock
  *   window there, and focus followed it, away from the lock screen in front of the user.
  *
- * On in main screen mode unless Settings.Global godaijishou_fold = 0. Any restore (volume up +
- * down, the adb escape, leaving the mode) unswaps, which ends all of it; second screen mode is
- * LG's own throughout.
+ * It simply follows the swap: main screen mode is swapped (fixed), second screen mode is LG's
+ * own. Any restore (volume up + down, the adb escape, leaving the mode) unswaps, which ends all
+ * of it.
  */
 final class SwivelPosture {
 
-    static final String KEY_FOLD = "godaijishou_fold";
     private static final String SERVICE = "com.lge.systemservice.service.PostureManagerService";
     private static final int STATE_OPEN = 2, STATE_CLOSED = 0;
     private static final int OPENING = 100, OPENED = 101, CLOSING = 200, CLOSED = 201;
 
     private static volatile Object service;
-    private static volatile boolean enabled;
     private static volatile boolean announcedFolded;
-    private static boolean watching;
 
     private SwivelPosture() {
     }
 
-    static boolean isEnabled() {
-        watch();
-        return enabled;
-    }
-
     static boolean folded() {
-        return enabled && DisplaySwap.isSwapped();
+        return DisplaySwap.isSwapped();
     }
 
     static void install(ClassLoader cl) {
@@ -289,7 +281,6 @@ final class SwivelPosture {
     }
 
     static void swapChanged() {
-        watch();
         Handler h = SystemSettings.handler();
         if (h != null) h.post(SwivelPosture::announce);
     }
@@ -308,30 +299,6 @@ final class SwivelPosture {
             android.util.Log.i("GoDaijishou", "swivel announced " + (want ? "closed (main screen mode)" : "open"));
         } catch (Throwable t) {
             ModuleLog.w(t);
-        }
-    }
-
-    private static void watch() {
-        if (watching) return;
-        Context c = SystemSettings.context();
-        Handler h = SystemSettings.handler();
-        if (c == null || h == null) return;
-        watching = true;
-        try {
-            enabled = Settings.Global.getInt(c.getContentResolver(), KEY_FOLD, 1) != 0;
-            c.getContentResolver().registerContentObserver(Settings.Global.getUriFor(KEY_FOLD), false,
-                    new ContentObserver(h) {
-                        @Override
-                        public void onChange(boolean selfChange) {
-                            enabled = Settings.Global.getInt(c.getContentResolver(), KEY_FOLD, 1) != 0;
-                            DisplaySwap.regroup();
-                            announce();
-                            MainScreen.apply();
-                        }
-                    });
-        } catch (Throwable t) {
-            ModuleLog.w(t);
-            watching = false;
         }
     }
 }
