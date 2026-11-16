@@ -677,6 +677,44 @@ final class TopHomeHook {
     private static void installFullIcons(ClassLoader cl) {
         Class<?> lgProfile = XposedHelpers.findClassIfExists("com.lge.launcher3.profile.LGDeviceProfile", cl);
         if (lgProfile == null) return;
+        // LG lays landscape out for the swivel's sideways top screen (its own dock, folder and
+        // cell sizes). Main screen mode's sideways panel is close to square (1240x1080): its
+        // landscape profile is worked out as portrait is, at the landscape size.
+        XposedBridge.hookAllConstructors(lgProfile, new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                Object[] a = param.args;
+                if (a.length < 8 || !(a[0] instanceof Context) || !Boolean.TRUE.equals(a[6])
+                        || !Boolean.FALSE.equals(a[7]) || !mainScreenMode((Context) a[0])) return;
+                a[6] = false;
+            }
+        });
+        // The open folder would still be inflated from LG's landscape layout (a side button
+        // column, sized for the swivel's top screen), which only its landscape code measures:
+        // it is inflated from the portrait one, the layout the profile is worked out for.
+        Class<?> folder = XposedHelpers.findClassIfExists("com.android.launcher3.folder.Folder", cl);
+        if (folder != null) {
+            XposedBridge.hookAllMethods(folder, "fromXml", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    if (param.args.length < 1 || !(param.args[0] instanceof android.app.Activity)) return;
+                    android.app.Activity a = (android.app.Activity) param.args[0];
+                    android.content.res.Configuration conf = a.getResources().getConfiguration();
+                    if (conf.orientation != android.content.res.Configuration.ORIENTATION_LANDSCAPE
+                            || !mainScreenMode(a)) return;
+                    int id = a.getResources().getIdentifier(folderLayout(cl), "layout", PKG);
+                    if (id == 0) return;
+                    android.content.res.Configuration port = new android.content.res.Configuration(conf);
+                    port.orientation = android.content.res.Configuration.ORIENTATION_PORTRAIT;
+                    port.screenWidthDp = conf.screenHeightDp;
+                    port.screenHeightDp = conf.screenWidthDp;
+                    try (android.content.res.XmlResourceParser parser =
+                                 a.createConfigurationContext(port).getResources().getLayout(id)) {
+                        param.setResult(a.getLayoutInflater().inflate(parser, null));
+                    }
+                }
+            });
+        }
         XposedBridge.hookAllMethods(lgProfile, "updateAvailableDimensions", new XC_MethodHook() {
             @Override
             protected void beforeHookedMethod(MethodHookParam param) {
@@ -684,7 +722,6 @@ final class TopHomeHook {
                 if (param.args.length < 3 || XposedHelpers.getBooleanField(p, "isTablet")) return;
                 Context c = (Context) param.args[0];
                 if (!mainScreenMode(c)) return;
-                if (XposedHelpers.getBooleanField(p, "isLandscape")) tallerDock(p);
                 int padding = XposedHelpers.getIntField(p, "iconDrawablePaddingOriginalPx");
                 Object res = param.args[2], metrics = param.args[1];
                 XposedHelpers.callMethod(p, "updateIconSize", c, 1f, padding, res, metrics);
@@ -722,25 +759,18 @@ final class TopHomeHook {
                 int bar = XposedHelpers.getIntField(p, "hotseatBarHeightPx");
                 int dock = XposedHelpers.getIntField(p, "hotseatIconSizePx");
                 int max = Math.round(bar * 0.8f);
-                if (bar > 0 && dock > max) XposedHelpers.setIntField(p, "hotseatIconSizePx", max);                param.setResult(null);
+                if (bar > 0 && dock > max) XposedHelpers.setIntField(p, "hotseatIconSizePx", max);
+                param.setResult(null);
             }
         });
         installGridPresets(cl);
     }
 
-    private static final String LG_DOCK_HEIGHT = "wingcustom_dock_height";
-
-    /**
-     * LG's landscape dock (made for the swivel's sideways screen) is a short bar: its icons
-     * stayed far smaller than the home's. In main screen mode it takes 1.5 times LG's height
-     * (from LG's own value each time, never compounding), a little of the workspace's height.
-     */
-    private static void tallerDock(Object p) {
-        Object kept = XposedHelpers.getAdditionalInstanceField(p, LG_DOCK_HEIGHT);
-        int bar = kept instanceof Integer ? (Integer) kept : XposedHelpers.getIntField(p, "hotseatBarHeightPx");
-        if (bar <= 0) return;
-        XposedHelpers.setAdditionalInstanceField(p, LG_DOCK_HEIGHT, bar);
-        XposedHelpers.setIntField(p, "hotseatBarHeightPx", Math.round(bar * 1.5f));
+    // The open folder's layout, as Folder.fromXml picks it.
+    private static String folderLayout(ClassLoader cl) {
+        Object ux10 = XposedHelpers.callStaticMethod(
+                XposedHelpers.findClass("com.lge.launcher3.util.Utilities", cl), "isLGUI10_0");
+        return Boolean.TRUE.equals(ux10) ? "user_folder_ux10_0" : "user_folder";
     }
 
     // {icon size in percent, labels shown 1/0} from the app's settings; null until read.
