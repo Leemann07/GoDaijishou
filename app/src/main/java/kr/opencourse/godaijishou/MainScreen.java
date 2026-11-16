@@ -67,7 +67,16 @@ final class MainScreen {
         if (!present()) {
             if (trial) {
                 escape(); // locked during the trial: not kept
-            } else if (ownSwap && DisplaySwap.isSwapped()) {
+            } else if (SwivelPosture.isEnabled()) {
+                // Fixed: the phone's own lock screen on this panel from the first lock after
+                // boot on (kept before, screen on); volume up + down still goes back.
+                if (!DisplaySwap.isSwapped() && kept() >= 0 && SystemSettings.mainReady && interactive()) {
+                    DisplaySwap.set(true);
+                    ownSwap = DisplaySwap.isSwapped();
+                    syncBrightness();
+                }
+            } else if (ownSwap && DisplaySwap.isSwapped() && !SwivelPosture.isEnabled()) {
+                // Fixed (SwivelPosture): the phone's own lock screen on this panel, stays swapped.
                 DisplaySwap.set(false);
                 ownSwap = false;
                 sleepSecondScreenSoon();
@@ -365,7 +374,8 @@ final class MainScreen {
                 public void onReceive(Context context, android.content.Intent intent) {
                     apply();
                 }
-            }, filter(android.content.Intent.ACTION_USER_PRESENT, android.content.Intent.ACTION_SCREEN_OFF),
+            }, filter(android.content.Intent.ACTION_USER_PRESENT, android.content.Intent.ACTION_SCREEN_OFF,
+                    android.content.Intent.ACTION_SCREEN_ON),
                     null, h);
             presentWatched = true;
         } catch (Throwable t) {
@@ -377,6 +387,15 @@ final class MainScreen {
         android.content.IntentFilter f = new android.content.IntentFilter();
         for (String a : actions) f.addAction(a);
         return f;
+    }
+
+    private static boolean interactive() {
+        try {
+            android.os.PowerManager pm = SystemSettings.context().getSystemService(android.os.PowerManager.class);
+            return pm != null && pm.isInteractive();
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     private static boolean present() {
