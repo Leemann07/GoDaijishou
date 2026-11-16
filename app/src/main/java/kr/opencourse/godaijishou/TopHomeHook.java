@@ -68,6 +68,7 @@ final class TopHomeHook {
         installSecondScreenGestures(cl);
         safely(() -> installProfileRefresh(cl));
         safely(() -> installLabelsBelow(cl));
+        safely(() -> installFullIcons(cl));
         safely(() -> installFreshLayout(cl));
         for (String name : new String[] {POSTURE, DISPLAY_HELPER}) {
             Class<?> c = XposedHelpers.findClassIfExists(name, cl);
@@ -205,8 +206,6 @@ final class TopHomeHook {
                 if (a == null || a.isDestroyed()) continue;
                 XposedHelpers.callMethod(a, "onHandleConfigChanged");
             }
-            android.util.Log.i("GoDaijishou", "home profile refreshed for main display "
-                    + now[0] + "x" + now[1] + " " + now[2] + "dpi");
         } catch (Throwable t) {
             ModuleLog.w(t);
         }
@@ -661,6 +660,181 @@ final class TopHomeHook {
             ModuleLog.w(t);
             return null;
         }
+    }
+
+    // --- Full-size icons on the second screen's panel ---
+
+    /**
+     * LG's home stacks the rows (icon + two label lines + padding) and, when they are taller
+     * than the workspace, shrinks every icon (home and dock) by that ratio. The second screen's
+     * panel as the main display is short (1080x1240), so the icons were always shrunk, and a
+     * larger display size shrank them further instead of enlarging them. In main screen mode,
+     * either orientation, the label takes one line (long names end in an ellipsis) and the icons keep LG's
+     * own size, shrunk only where a row cannot hold one above its label. On top of that the
+     * user sets the icon size (percent of that) and whether labels show, as in other home apps;
+     * a label with no room left is hidden. Dock icons stay within the dock.
+     */
+    private static void installFullIcons(ClassLoader cl) {
+        Class<?> lgProfile = XposedHelpers.findClassIfExists("com.lge.launcher3.profile.LGDeviceProfile", cl);
+        if (lgProfile == null) return;
+        XposedBridge.hookAllMethods(lgProfile, "updateAvailableDimensions", new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                Object p = param.thisObject;
+                if (param.args.length < 3 || XposedHelpers.getBooleanField(p, "isTablet")) return;
+                Context c = (Context) param.args[0];
+                if (!mainScreenMode(c)) return;
+                if (XposedHelpers.getBooleanField(p, "isLandscape")) tallerDock(p);
+                int padding = XposedHelpers.getIntField(p, "iconDrawablePaddingOriginalPx");
+                Object res = param.args[2], metrics = param.args[1];
+                XposedHelpers.callMethod(p, "updateIconSize", c, 1f, padding, res, metrics);
+                // LG's own icon size at scale 1.
+                int icon = XposedHelpers.getIntField(p, "iconSizePx");
+                // The cell the workspace actually gives each item.
+                android.graphics.Point size = (android.graphics.Point) XposedHelpers.callMethod(p, "getCellSize");
+                if (icon <= 0 || size.x <= 0 || size.y <= 0) {
+                    param.setResult(null);
+                    return;
+                }
+                // The label is drawn at LG's text size times the font scale (LG's own cell math
+                // leaves the scale out): one line's full height, descenders (g, y) included.
+                int text = XposedHelpers.getIntField(p, "iconTextSizePx");
+                android.graphics.Paint paint = new android.graphics.Paint();
+                paint.setTextSize(text * c.getResources().getConfiguration().fontScale);
+                android.graphics.Paint.FontMetrics fm = paint.getFontMetrics();
+                float line = fm.bottom - fm.top;
+                // 100%: LG's own icon size whatever the grid (as in other home apps), smaller
+                // only where a row has no room for it above a one-line label. The user's size
+                // scales that, up to the whole cell; only the icon grows, the label keeps the
+                // size the display size gives it. Half LG's icon-to-label gap: the glyphs' own
+                // top spacing already keeps them apart, and the icon gets the room.
+                int gap = padding / 2;
+                float fit = Math.min((size.y - gap - line - 2) / icon, 0.8f * size.x / icon);
+                int[] prefs = iconPrefs(c);
+                float scale = Math.min(1f, fit) * prefs[0] / 100f;
+                scale = Math.min(scale, Math.min(0.95f * size.x, size.y - 2f) / icon);
+                // A label that has no room is left out, never cut off.
+                // (At 100% the fit is exact: a pixel of slack for the float rounding.)
+                boolean label = prefs[1] == 1 && icon * scale + gap + line + 2 <= size.y + 1;
+                XposedHelpers.setIntField(p, "iconTextMaxLines", 1);
+                XposedHelpers.callMethod(p, "updateIconSize", c, scale, gap, res, metrics);
+                XposedHelpers.setIntField(p, "iconTextSizePx", label ? text : 0);
+                int bar = XposedHelpers.getIntField(p, "hotseatBarHeightPx");
+                int dock = XposedHelpers.getIntField(p, "hotseatIconSizePx");
+                int max = Math.round(bar * 0.8f);
+                if (bar > 0 && dock > max) XposedHelpers.setIntField(p, "hotseatIconSizePx", max);                param.setResult(null);
+            }
+        });
+        installGridPresets(cl);
+    }
+
+    private static final String LG_DOCK_HEIGHT = "wingcustom_dock_height";
+
+    /**
+     * LG's landscape dock (made for the swivel's sideways screen) is a short bar: its icons
+     * stayed far smaller than the home's. In main screen mode it takes 1.4 times LG's height
+     * (from LG's own value each time, never compounding), a little of the workspace's height.
+     */
+    private static void tallerDock(Object p) {
+        Object kept = XposedHelpers.getAdditionalInstanceField(p, LG_DOCK_HEIGHT);
+        int bar = kept instanceof Integer ? (Integer) kept : XposedHelpers.getIntField(p, "hotseatBarHeightPx");
+        if (bar <= 0) return;
+        XposedHelpers.setAdditionalInstanceField(p, LG_DOCK_HEIGHT, bar);
+        XposedHelpers.setIntField(p, "hotseatBarHeightPx", Math.round(bar * 1.4f));
+    }
+
+    // {icon size in percent, labels shown 1/0} from the app's settings; null until read.
+    private static volatile int[] iconPrefs;
+
+    /**
+     * Read once from the app's provider, then kept until it changes: a change restarts the
+     * home, which lays itself out again with the new size (no polling).
+     */
+    private static int[] iconPrefs(Context c) {
+        int[] v = iconPrefs;
+        if (v != null) return v;
+        v = readIconPrefs(c);
+        iconPrefs = v;
+        Context app = c.getApplicationContext() != null ? c.getApplicationContext() : c;
+        try {
+            app.getContentResolver().registerContentObserver(SettingsProvider.CONTENT_URI, false,
+                    new android.database.ContentObserver(new android.os.Handler(android.os.Looper.getMainLooper())) {
+                        @Override
+                        public void onChange(boolean selfChange) {
+                            new Thread(() -> {
+                                int[] now = readIconPrefs(app);
+                                int[] was = iconPrefs;
+                                if (was != null && (now[0] != was[0] || now[1] != was[1])) {
+                                    android.os.Process.killProcess(android.os.Process.myPid());
+                                }
+                            }, "GoDaijishou-icons").start();
+                        }
+                    });
+        } catch (Throwable t) {
+            ModuleLog.w(t);
+        }
+        return v;
+    }
+
+    private static int[] readIconPrefs(Context c) {
+        int[] v = {AppPreferences.ICON_SCALE_DEFAULT, 1};
+        try (android.database.Cursor cur = c.getContentResolver().query(SettingsProvider.CONTENT_URI, null, null, null, null)) {
+            if (cur != null && cur.moveToFirst()) {
+                int i = cur.getColumnIndex(AppPreferences.KEY_HOME_ICON_SCALE);
+                int j = cur.getColumnIndex(AppPreferences.KEY_HOME_ICON_LABELS);
+                if (i >= 0) v[0] = clampIconScale(cur.getInt(i));
+                if (j >= 0) v[1] = cur.getInt(j) == 0 ? 0 : 1;
+            }
+        } catch (Throwable t) {
+            ModuleLog.w(t);
+        }
+        return v;
+    }
+
+    static int clampIconScale(int percent) {
+        return Math.max(AppPreferences.ICON_SCALE_MIN, Math.min(AppPreferences.ICON_SCALE_MAX, percent));
+    }
+
+    private static final String GRID_PRESETS = "config_dynamic_grid_preset";
+    // Main screen mode's grids. The edit mode's grid panel has exactly five slots: 4x3 takes
+    // the place of 5x6, too dense for this panel.
+    private static final String[] MAIN_SCREEN_GRIDS = {"4x3", "4x4", "4x5", "4x6", "5x5"};
+    private static int gridPresetsId;
+
+    /**
+     * LG's grid choices (settings dialog, edit mode panel, and the check that a saved grid is
+     * still valid) all come from one string array. In main screen mode it lists 4x3 for the
+     * short panel. A home started in second screen mode does not list it, and LG's check there
+     * put a saved 4x3 back to the default 5x5 (small icons after every trip to the second
+     * screen): 4x3 stays valid in both modes.
+     */
+    private static void installGridPresets(ClassLoader cl) {
+        Class<?> profile = XposedHelpers.findClassIfExists("com.android.launcher3.DeviceProfile", cl);
+        if (profile != null) {
+            XposedBridge.hookAllMethods(profile, "checkValidGridSize", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    Object p = param.thisObject;
+                    if (XposedHelpers.getIntField(p, "numColumns") == 4
+                            && XposedHelpers.getIntField(p, "numRows") == 3) param.setResult(null);
+                }
+            });
+        }
+        XposedBridge.hookAllMethods(android.content.res.Resources.class, "getStringArray", new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                if (param.args.length != 1 || !(param.args[0] instanceof Integer)) return;
+                android.content.res.Resources r = (android.content.res.Resources) param.thisObject;
+                if (gridPresetsId == 0) gridPresetsId = r.getIdentifier(GRID_PRESETS, "array", PKG);
+                if ((Integer) param.args[0] != gridPresetsId || gridPresetsId == 0) return;
+                Context app = android.app.AndroidAppHelper.currentApplication();
+                if (app != null && mainScreenMode(app)) param.setResult(MAIN_SCREEN_GRIDS.clone());
+            }
+        });
+    }
+
+    private static boolean mainScreenMode(Context c) {
+        return android.provider.Settings.Global.getInt(c.getContentResolver(), SwivelFold.KEY_SWAPPED, 0) == 1;
     }
 
     // --- Home grid 4x4, once ---

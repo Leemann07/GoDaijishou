@@ -119,4 +119,8 @@
     <string name="scope_systemui_keyboard">• System UI (com.android.systemui)\n• LG keyboard (com.lge.ime)</string>
     <string name="scope_popupcamera">• LG pop-up camera (com.lge.popupcamera)</string>
     <string name="update_available">Update v%1$s</string>
+    <string name="home_icons_title">LG home icons</string>
+    <string name="home_icons_desc" formatted="false">Icon size on LG\'s home and dock in main screen mode. 100% is LG\'s own size, smaller only where a row leaves no room for a one-line name. Larger icons hide a name with no room left.</string>
+    <string name="home_icons_size">Size</string>
+    <string name="home_icons_labels">Show app names</string>
 </resources>
