@@ -731,6 +731,9 @@ final class TopHomeHook {
                 XposedHelpers.callMethod(p, "updateIconSize", c, 1f, padding, res, metrics);
                 // LG's own icon size at scale 1.
                 int icon = XposedHelpers.getIntField(p, "iconSizePx");
+                if (XposedHelpers.getIntField(p, "widthPx") > XposedHelpers.getIntField(p, "heightPx")) {
+                    roomierSideways(p, icon);
+                }
                 // The cell the workspace actually gives each item: LG's getCellSize leaves out
                 // the nav bar, which the workspace keeps clear below its rows as well.
                 android.graphics.Point size = (android.graphics.Point) XposedHelpers.callMethod(p, "getCellSize");
@@ -759,14 +762,35 @@ final class TopHomeHook {
                 XposedHelpers.setIntField(p, "iconTextMaxLines", 1);
                 XposedHelpers.callMethod(p, "updateIconSize", c, scale, padding, res, metrics);
                 XposedHelpers.setIntField(p, "iconTextSizePx", label ? text : 0);
+                // The dock has its own height: its icons keep LG's own size within it (at most
+                // 80% of the bar, LG's rule) instead of shrinking with the workspace's rows.
                 int bar = XposedHelpers.getIntField(p, "hotseatBarHeightPx");
-                int dock = XposedHelpers.getIntField(p, "hotseatIconSizePx");
-                int max = Math.round(bar * 0.8f);
-                if (bar > 0 && dock > max) XposedHelpers.setIntField(p, "hotseatIconSizePx", max);
+                if (bar > 0) XposedHelpers.setIntField(p, "hotseatIconSizePx", Math.min(icon, Math.round(bar * 0.8f)));
                 param.setResult(null);
             }
         });
         installGridPresets(cl);
+    }
+
+    private static final String LG_TOP_MARGIN = "wingcustom_top_margin";
+
+    /**
+     * Sideways, the profile worked out as portrait keeps portrait's top margin and dock, made
+     * for a panel 160 px taller: the rows were left little room. The top margin takes a
+     * quarter of LG's (LG's value kept, never compounding), and the dock no more than a
+     * full-size icon needs (LG's dock icons take at most 80% of it).
+     */
+    private static void roomierSideways(Object p, int icon) {
+        Object kept = XposedHelpers.getAdditionalInstanceField(p, LG_TOP_MARGIN);
+        int top = kept instanceof Integer ? (Integer) kept : 0;
+        if (top <= 0) {
+            top = XposedHelpers.getIntField(p, "desiredWorkspaceTopMarginPx");
+            if (top > 0) XposedHelpers.setAdditionalInstanceField(p, LG_TOP_MARGIN, top);
+        }
+        if (top > 0) XposedHelpers.setIntField(p, "desiredWorkspaceTopMarginPx", top / 4);
+        int bar = XposedHelpers.getIntField(p, "hotseatBarHeightPx");
+        int need = Math.round(icon / 0.8f);
+        if (bar > need && need > 0) XposedHelpers.setIntField(p, "hotseatBarHeightPx", need);
     }
 
     // The open folder's layout, as Folder.fromXml picks it.
