@@ -114,6 +114,53 @@ final class DisplaySwap {
         } catch (Throwable t) {
             ModuleLog.w(t);
         }
+        try {
+            installNoBacklightFight(cl);
+        } catch (Throwable t) {
+            ModuleLog.w(t);
+        }
+    }
+
+    /**
+     * Swapped, the second screen's panel is display 0's device as well: the main display's
+     * controller sets its backlight (through its own brightness-to-backlight curve) and LG's
+     * second screen modulator, which re-sends its own value whenever the device's last
+     * backlight is not the one it sent (forceUpdate). The two never agree, so the modulator
+     * looped: about 15000 updates and log lines a second, system_server above 150 % CPU, a hot
+     * phone. While swapped the modulator is told the device holds what it last sent.
+     */
+    private static void installNoBacklightFight(ClassLoader cl) {
+        Class<?> state = XposedHelpers.findClassIfExists("com.android.server.display.SecondaryDisplayPowerState", cl);
+        if (state == null) return;
+        XposedHelpers.findField(state, "mPhotonicModulator");
+        hookActual(state, "getActualBrightness", "mActualBacklight");
+        hookActual(state, "getActualSdrBrightness", "mActualSdrBacklight");
+        // Both getters are tiny and compiled into the modulator's loop (inlined), where a hook
+        // is never reached: the loop is run from its bytecode instead (LSPosed's deoptimize).
+        try {
+            Class<?> modulator = XposedHelpers.findClass(state.getName() + "$SecondaryPhotonicModulator",
+                    state.getClassLoader());
+            java.lang.reflect.Method deopt = XposedBridge.class.getMethod("deoptimizeMethod",
+                    java.lang.reflect.Member.class);
+            deopt.invoke(null, modulator.getDeclaredMethod("run"));
+        } catch (Throwable t) {
+            android.util.Log.w("GoDaijishou", "modulator deoptimize", t);
+        }
+    }
+
+    private static void hookActual(Class<?> state, String method, String field) {
+        XposedBridge.hookAllMethods(state, method, new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                if (!swapped) return;
+                try {
+                    Object modulator = XposedHelpers.getObjectField(param.thisObject, "mPhotonicModulator");
+                    if (modulator != null) param.setResult(XposedHelpers.getFloatField(modulator, field));
+                } catch (Throwable t) {
+                    ModuleLog.w(t);
+                }
+            }
+        });
     }
 
     private static final int WAKEFULNESS_AWAKE = 1;
