@@ -71,9 +71,6 @@ public class SettingsProvider extends ContentProvider {
                 AppPreferences.SCREEN_MODE_SECOND));
         String modeEpoch = String.valueOf(prefs.getInt(AppPreferences.KEY_MODE_EPOCH, 0));
         String mainReady = AppPreferences.mainModeReady(context) ? "1" : "0";
-        String iconScale = String.valueOf(prefs.getInt(AppPreferences.KEY_HOME_ICON_SCALE,
-                AppPreferences.ICON_SCALE_DEFAULT));
-        String iconLabels = prefs.getBoolean(AppPreferences.KEY_HOME_ICON_LABELS, true) ? "1" : "0";
 
         MatrixCursor cursor = new MatrixCursor(new String[]{
                 AppPreferences.KEY_LAUNCHER_PACKAGE,
@@ -95,13 +92,11 @@ public class SettingsProvider extends ContentProvider {
                 AppPreferences.KEY_BATTERY_STRIP_POS,
                 AppPreferences.KEY_SCREEN_MODE,
                 AppPreferences.KEY_MODE_EPOCH,
-                AppPreferences.COL_MAIN_READY,
-                AppPreferences.KEY_HOME_ICON_SCALE,
-                AppPreferences.KEY_HOME_ICON_LABELS
+                AppPreferences.COL_MAIN_READY
         });
         cursor.addRow(new Object[]{targetPackage, targetActivity, forceRotation, powerMenu, topOff, chargeOnly, volume,
                 batteryStrip, labelHideFullscreen, perfProfile, hideSwivel, slimPill, imeStrip, fingerprintOff, debugLog,
-                stripStyle, stripPos, screenMode, modeEpoch, mainReady, iconScale, iconLabels});
+                stripStyle, stripPos, screenMode, modeEpoch, mainReady});
         return cursor;
     }
 

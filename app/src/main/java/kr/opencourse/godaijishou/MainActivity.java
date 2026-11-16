@@ -129,7 +129,6 @@ public class MainActivity extends AppCompatActivity {
         bindScopedSwitch(R.id.row_fingerprint_off, findViewById(R.id.switch_fingerprint_off),
                 AppPreferences.KEY_FINGERPRINT_OFF, R.string.scope_system, "android");
         buildPerfProfileButtons();
-        bindHomeIcons();
 
         findViewById(R.id.row_reboot).setOnClickListener(v -> confirmReboot());
         findViewById(R.id.btn_notice_reboot).setOnClickListener(v -> confirmReboot());
@@ -549,7 +548,6 @@ public class MainActivity extends AppCompatActivity {
             if (v != null) v.setVisibility(bottom ? View.VISIBLE : View.GONE);
         }
         findViewById(R.id.card_original).setVisibility(bottom ? View.GONE : View.VISIBLE);
-        findViewById(R.id.card_home_icons).setVisibility(bottom ? View.GONE : View.VISIBLE);
     }
 
     private void styleChoice(TextView[] buttons, int selected) {
@@ -627,45 +625,6 @@ public class MainActivity extends AppCompatActivity {
 
     // A switch backed by a system_server hook: saved in the provider-exposed prefs and
     // applied immediately through the hook's ContentObserver when the hook is loaded.
-    // LG home's icon size (percent, steps of 10) and labels, main screen mode. Saved when the
-    // slider is let go: each change restarts LG's home once to lay it out again.
-    private static final int ICON_SCALE_STEP = 10;
-
-    private void bindHomeIcons() {
-        android.widget.SeekBar seek = findViewById(R.id.seek_home_icon_size);
-        TextView value = findViewById(R.id.tv_home_icon_size);
-        int min = AppPreferences.ICON_SCALE_MIN;
-        seek.setMax((AppPreferences.ICON_SCALE_MAX - min) / ICON_SCALE_STEP);
-        int current = prefs.getInt(AppPreferences.KEY_HOME_ICON_SCALE, AppPreferences.ICON_SCALE_DEFAULT);
-        seek.setProgress((current - min) / ICON_SCALE_STEP);
-        value.setText(current + "%");
-        seek.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(android.widget.SeekBar s, int progress, boolean fromUser) {
-                value.setText((min + progress * ICON_SCALE_STEP) + "%");
-            }
-
-            @Override
-            public void onStartTrackingTouch(android.widget.SeekBar s) {
-            }
-
-            @Override
-            public void onStopTrackingTouch(android.widget.SeekBar s) {
-                int percent = min + s.getProgress() * ICON_SCALE_STEP;
-                if (percent == prefs.getInt(AppPreferences.KEY_HOME_ICON_SCALE, AppPreferences.ICON_SCALE_DEFAULT)) return;
-                prefs.edit().putInt(AppPreferences.KEY_HOME_ICON_SCALE, percent).commit();
-                getContentResolver().notifyChange(SettingsProvider.CONTENT_URI, null);
-            }
-        });
-        SwitchMaterial labels = findViewById(R.id.switch_home_icon_labels);
-        findViewById(R.id.row_home_icon_labels).setOnClickListener(v -> labels.toggle());
-        labels.setChecked(prefs.getBoolean(AppPreferences.KEY_HOME_ICON_LABELS, true));
-        labels.setOnCheckedChangeListener((b, checked) -> {
-            prefs.edit().putBoolean(AppPreferences.KEY_HOME_ICON_LABELS, checked).commit();
-            getContentResolver().notifyChange(SettingsProvider.CONTENT_URI, null);
-        });
-    }
-
     private void bindSystemHookSwitch(int rowId, SwitchMaterial sw, String key) {
         findViewById(rowId).setOnClickListener(v -> sw.toggle());
         sw.setChecked(prefs.getBoolean(key, false));

@@ -669,10 +669,9 @@ final class TopHomeHook {
      * than the workspace, shrinks every icon (home and dock) by that ratio. The second screen's
      * panel as the main display is short (1080x1240), so the icons were always shrunk, and a
      * larger display size shrank them further instead of enlarging them. In main screen mode,
-     * either orientation, the label takes one line (long names end in an ellipsis) and the icons keep LG's
-     * own size, shrunk only where a row cannot hold one above its label. On top of that the
-     * user sets the icon size (percent of that) and whether labels show, as in other home apps;
-     * a label with no room left is hidden. Dock icons stay within the dock.
+     * either orientation, the label takes one line (long names end in an ellipsis) and the
+     * icons keep LG's own size, shrunk only where a row cannot hold one with its label and
+     * the space between rows. Dock icons stay within the dock.
      */
     private static void installFullIcons(ClassLoader cl) {
         Class<?> lgProfile = XposedHelpers.findClassIfExists("com.lge.launcher3.profile.LGDeviceProfile", cl);
@@ -687,6 +686,11 @@ final class TopHomeHook {
                 if (a.length < 8 || !(a[0] instanceof Context) || !Boolean.TRUE.equals(a[6])
                         || !Boolean.FALSE.equals(a[7]) || !mainScreenMode((Context) a[0])) return;
                 a[6] = false;
+                // The usable size is taken from (min, max) by orientation: swapped, the
+                // portrait reading gives the landscape size.
+                Object min = a[2];
+                a[2] = a[3];
+                a[3] = min;
             }
         });
         // The open folder would still be inflated from LG's landscape layout (a side button
@@ -727,8 +731,13 @@ final class TopHomeHook {
                 XposedHelpers.callMethod(p, "updateIconSize", c, 1f, padding, res, metrics);
                 // LG's own icon size at scale 1.
                 int icon = XposedHelpers.getIntField(p, "iconSizePx");
-                // The cell the workspace actually gives each item.
+                // The cell the workspace actually gives each item: LG's getCellSize leaves out
+                // the nav bar, which the workspace keeps clear below its rows as well.
                 android.graphics.Point size = (android.graphics.Point) XposedHelpers.callMethod(p, "getCellSize");
+                int nav = XposedHelpers.getIntField(p, "heightPx") - XposedHelpers.getIntField(p, "availableHeightPx")
+                        - dimen(c.getResources(), "status_bar_height");
+                int rows = XposedHelpers.getIntField(p, "numRows");
+                if (nav > 0 && rows > 0) size.y -= Math.round((float) nav / rows);
                 if (icon <= 0 || size.x <= 0 || size.y <= 0) {
                     param.setResult(null);
                     return;
@@ -740,21 +749,15 @@ final class TopHomeHook {
                 paint.setTextSize(text * c.getResources().getConfiguration().fontScale);
                 android.graphics.Paint.FontMetrics fm = paint.getFontMetrics();
                 float line = fm.bottom - fm.top;
-                // 100%: LG's own icon size whatever the grid (as in other home apps), smaller
-                // only where a row has no room for it above a one-line label. The user's size
-                // scales that, up to the whole cell; only the icon grows, the label keeps the
-                // size the display size gives it. Half LG's icon-to-label gap: the glyphs' own
-                // top spacing already keeps them apart, and the icon gets the room.
-                int gap = padding / 2;
-                float fit = Math.min((size.y - gap - line - 2) / icon, 0.8f * size.x / icon);
-                int[] prefs = iconPrefs(c);
-                float scale = Math.min(1f, fit) * prefs[0] / 100f;
-                scale = Math.min(scale, Math.min(0.95f * size.x, size.y - 2f) / icon);
+                // LG's own icon size whatever the grid (as in other home apps), smaller only
+                // where a row has no room for it: LG's icon-to-label gap above the one-line
+                // label and the same gap below it, between the rows.
+                float fit = Math.min((size.y - 2 * padding - line) / icon, 0.8f * size.x / icon);
+                float scale = Math.max(0f, Math.min(1f, fit));
                 // A label that has no room is left out, never cut off.
-                // (At 100% the fit is exact: a pixel of slack for the float rounding.)
-                boolean label = prefs[1] == 1 && icon * scale + gap + line + 2 <= size.y + 1;
+                boolean label = icon * scale + padding + line <= size.y;
                 XposedHelpers.setIntField(p, "iconTextMaxLines", 1);
-                XposedHelpers.callMethod(p, "updateIconSize", c, scale, gap, res, metrics);
+                XposedHelpers.callMethod(p, "updateIconSize", c, scale, padding, res, metrics);
                 XposedHelpers.setIntField(p, "iconTextSizePx", label ? text : 0);
                 int bar = XposedHelpers.getIntField(p, "hotseatBarHeightPx");
                 int dock = XposedHelpers.getIntField(p, "hotseatIconSizePx");
@@ -771,58 +774,6 @@ final class TopHomeHook {
         Object ux10 = XposedHelpers.callStaticMethod(
                 XposedHelpers.findClass("com.lge.launcher3.util.Utilities", cl), "isLGUI10_0");
         return Boolean.TRUE.equals(ux10) ? "user_folder_ux10_0" : "user_folder";
-    }
-
-    // {icon size in percent, labels shown 1/0} from the app's settings; null until read.
-    private static volatile int[] iconPrefs;
-
-    /**
-     * Read once from the app's provider, then kept until it changes: a change restarts the
-     * home, which lays itself out again with the new size (no polling).
-     */
-    private static int[] iconPrefs(Context c) {
-        int[] v = iconPrefs;
-        if (v != null) return v;
-        v = readIconPrefs(c);
-        iconPrefs = v;
-        Context app = c.getApplicationContext() != null ? c.getApplicationContext() : c;
-        try {
-            app.getContentResolver().registerContentObserver(SettingsProvider.CONTENT_URI, false,
-                    new android.database.ContentObserver(new android.os.Handler(android.os.Looper.getMainLooper())) {
-                        @Override
-                        public void onChange(boolean selfChange) {
-                            new Thread(() -> {
-                                int[] now = readIconPrefs(app);
-                                int[] was = iconPrefs;
-                                if (was != null && (now[0] != was[0] || now[1] != was[1])) {
-                                    android.os.Process.killProcess(android.os.Process.myPid());
-                                }
-                            }, "GoDaijishou-icons").start();
-                        }
-                    });
-        } catch (Throwable t) {
-            ModuleLog.w(t);
-        }
-        return v;
-    }
-
-    private static int[] readIconPrefs(Context c) {
-        int[] v = {AppPreferences.ICON_SCALE_DEFAULT, 1};
-        try (android.database.Cursor cur = c.getContentResolver().query(SettingsProvider.CONTENT_URI, null, null, null, null)) {
-            if (cur != null && cur.moveToFirst()) {
-                int i = cur.getColumnIndex(AppPreferences.KEY_HOME_ICON_SCALE);
-                int j = cur.getColumnIndex(AppPreferences.KEY_HOME_ICON_LABELS);
-                if (i >= 0) v[0] = clampIconScale(cur.getInt(i));
-                if (j >= 0) v[1] = cur.getInt(j) == 0 ? 0 : 1;
-            }
-        } catch (Throwable t) {
-            ModuleLog.w(t);
-        }
-        return v;
-    }
-
-    static int clampIconScale(int percent) {
-        return Math.max(AppPreferences.ICON_SCALE_MIN, Math.min(AppPreferences.ICON_SCALE_MAX, percent));
     }
 
     private static final String GRID_PRESETS = "config_dynamic_grid_preset";

@@ -119,8 +119,4 @@
     <string name="scope_systemui_keyboard">• 시스템 UI (com.android.systemui)\n• LG 키보드 (com.lge.ime)</string>
     <string name="scope_popupcamera">• LG 팝업 카메라 (com.lge.popupcamera)</string>
     <string name="update_available">업데이트 v%1$s</string>
-    <string name="home_icons_title">LG 홈 아이콘</string>
-    <string name="home_icons_desc" formatted="false">메인 스크린 모드에서 LG 홈·독 아이콘 크기입니다. 100%는 LG 기본 크기이고, 칸이 좁으면 이름 한 줄이 들어가게 줄어듭니다. 키워서 이름 들어갈 자리가 없으면 이름은 숨겨집니다.</string>
-    <string name="home_icons_size">크기</string>
-    <string name="home_icons_labels">앱 이름 표시</string>
 </resources>

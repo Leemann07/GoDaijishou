@@ -56,11 +56,6 @@ public class AppPreferences {
     public static final String KEY_USB_CHARGE_ONLY = "usb_charge_only";
     // Write the hooks' swallowed failures to the LSPosed log (every hooked process).
     public static final String KEY_DEBUG_LOG = "debug_log";
-    // Main screen mode, LG's home: icon size in percent of the size that fits (LG home hook).
-    public static final String KEY_HOME_ICON_SCALE = "home_icon_scale";
-    public static final int ICON_SCALE_MIN = 50, ICON_SCALE_MAX = 200, ICON_SCALE_DEFAULT = 100;
-    // Main screen mode, LG's home: labels under the icons (LG home hook).
-    public static final String KEY_HOME_ICON_LABELS = "home_icon_labels";
 
     // App-only state, kept apart from the provider-exposed settings.
     private static final String MODE_PREF_FILE_NAME = "Godaijishou_mode_prefs";
