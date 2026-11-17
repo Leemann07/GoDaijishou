@@ -871,7 +871,7 @@ public class MainActivity extends AppCompatActivity {
     private void showHomeOnSecondScreen(String pkg) {
         DisplayManager dm = getSystemService(DisplayManager.class);
         if (dm == null || !Screens.isSecondScreenOn(dm)) {
-            android.util.Log.w("GoDaijishou", "showHome: second screen off");
+            ModuleLog.i("showHome: second screen off");
             return;
         }
         Intent home;
@@ -881,7 +881,7 @@ public class MainActivity extends AppCompatActivity {
         } else {
             home = stockSecondHome();
             if (home == null) {
-                android.util.Log.w("GoDaijishou", "showHome: no LG home intent");
+                ModuleLog.i("showHome: no LG home intent");
                 return;
             }
         }
@@ -892,7 +892,7 @@ public class MainActivity extends AppCompatActivity {
                     .setLaunchDisplayId(MainModule.SECOND_SCREEN_DISPLAY_ID).toBundle());
         } catch (RuntimeException e) {
             // The setting is saved either way; it applies on the next home press.
-            android.util.Log.w("GoDaijishou", "showHome failed", e);
+            ModuleLog.w("showHome failed", e);
         }
     }
 

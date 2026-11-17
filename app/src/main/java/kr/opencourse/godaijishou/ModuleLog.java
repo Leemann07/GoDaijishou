@@ -17,7 +17,7 @@ import de.robv.android.xposed.XposedHelpers;
  * Every hook swallows its failures so a broken firmware detail never takes an app down.
  * With the switch on, those failures are written out: each distinct place and exception
  * once per process, so a failure in a per-frame path doesn't flood the log.
- * Hook install failures are always written (once per process start, and only on failure).
+ * With the switch off nothing at all is written, not even a hook that failed to install.
  *
  * The switch reaches every process through Settings.Global (written by system_server's
  * SystemSettings), the same way the bottom-bar options do.
@@ -38,15 +38,32 @@ final class ModuleLog {
     /** A swallowed failure: written only while the switch is on. */
     static void w(Throwable t) {
         if (!enabled()) return;
-        write(t);
+        write(null, t);
     }
 
-    /** A hook that could not be installed: always written. */
+    /** A swallowed failure with a note: written only while the switch is on. */
+    static void w(String note, Throwable t) {
+        if (!enabled()) return;
+        write(note, t);
+    }
+
+    /** A hook that could not be installed: written only while the switch is on. */
     static void install(Throwable t) {
-        write(t);
+        if (!enabled()) return;
+        write(null, t);
     }
 
-    private static void write(Throwable t) {
+    /** A state note: written only while the switch is on, every time. */
+    static void i(String note) {
+        if (!enabled()) return;
+        try {
+            XposedBridge.log(TAG + " " + note);
+        } catch (Throwable ignored) {
+            // Logging must never fail the caller (and outside a hooked process there is no log).
+        }
+    }
+
+    private static void write(String note, Throwable t) {
         try {
             StackTraceElement[] stack = new Throwable().getStackTrace();
             // [0] write, [1] w/install, [2] the catch site.
@@ -55,7 +72,8 @@ final class ModuleLog {
                     + "." + stack[2].getMethodName() + ":" + stack[2].getLineNumber()
                     : "?";
             if (!seen.add(site + " " + t.getClass().getName())) return;
-            XposedBridge.log(TAG + " " + site + " in " + processName() + "\n" + Log.getStackTraceString(t));
+            XposedBridge.log(TAG + " " + site + " in " + processName() + (note == null ? "" : " (" + note + ")")
+                    + "\n" + Log.getStackTraceString(t));
         } catch (Throwable ignored) {
             // Logging must never fail the caller.
         }

@@ -234,6 +234,17 @@ final class MainScreen {
                         if (movingApps || android.os.SystemClock.uptimeMillis() < quietUntil) param.setResult(null);
                     }
                 });
+        // The panel moved: display 0 (or 4) takes the forced rotation a moment later, and the
+        // rotation froze the display on a screenshot of the old (portrait) picture and turned
+        // it. A move between screens is a cut, no rotation animation around it.
+        de.robv.android.xposed.XposedBridge.hookAllMethods(
+                de.robv.android.xposed.XposedHelpers.findClass("com.android.server.wm.WindowManagerService", cl),
+                "startFreezingDisplay", new de.robv.android.xposed.XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        if (android.os.SystemClock.uptimeMillis() < quietUntil) param.setResult(null);
+                    }
+                });
         // Unlocking starts: cover the second screen until the swap takes over.
         de.robv.android.xposed.XposedBridge.hookAllMethods(
                 de.robv.android.xposed.XposedHelpers.findClass("com.android.server.wm.ActivityTaskManagerService", cl),
@@ -338,7 +349,7 @@ final class MainScreen {
                     protected void beforeHookedMethod(MethodHookParam param) {
                         if (!blocksPartialWake()) return;
                         param.setResult(false);
-                        android.util.Log.i("GoDaijishou", "partial wake-up blocked (main screen mode)");
+                        ModuleLog.i("partial wake-up blocked (main screen mode)");
                     }
                 });
     }
@@ -500,9 +511,72 @@ final class MainScreen {
         }
     }
 
-    // The switch waits for the cover's frame to reach the screen, at most COVER_WAIT_MS; the
-    // new display's first frames are up by the time the cover goes (SWAP_COVER_MS).
-    private static final long COVER_WAIT_MS = 300, SWAP_COVER_MS = 400;
+    // The switch waits for the cover's frame to reach the screen, at most COVER_WAIT_MS. The
+    // cover then stays until the bottom panel's display has settled (SETTLE_*), and fades.
+    private static final long COVER_WAIT_MS = 300;
+    private static final long SETTLE_STEP_MS = 50, SETTLE_MIN_MS = 250, SETTLE_DRAW_MS = 100, FADE_MS = 150;
+
+    /**
+     * The cover goes once the bottom panel's display shows the panel the right way round: the
+     * size is the panel's (either way round) and the rotation held still for a step, then the
+     * apps get a moment to draw at it, then the cover fades. A fixed delay let the rotation
+     * finish after the cover had gone: a portrait frame on every switch. Looks only during a
+     * switch (a few dozen reads), never otherwise; COVER_MAX_MS is the bound.
+     */
+    private static void revealWhenSettled(Handler h) {
+        h.removeCallbacks(HIDE_COVER);
+        long start = android.os.SystemClock.uptimeMillis();
+        int[] last = {-1};
+        Runnable[] step = new Runnable[1];
+        step[0] = () -> {
+            if (covers.isEmpty()) return;
+            long now = android.os.SystemClock.uptimeMillis();
+            if (now - start >= COVER_MAX_MS) {
+                fadeCover(h);
+                return;
+            }
+            int rotation = -2;
+            try {
+                int id = DisplaySwap.isSwapped() ? Display.DEFAULT_DISPLAY : MainModule.SECOND_SCREEN_DISPLAY_ID;
+                Display d = SystemSettings.context().getSystemService(android.hardware.display.DisplayManager.class)
+                        .getDisplay(id);
+                if (d != null) {
+                    android.graphics.Point size = new android.graphics.Point();
+                    d.getRealSize(size);
+                    if (Math.min(size.x, size.y) == PANEL_SHORT && Math.max(size.x, size.y) == PANEL_LONG) {
+                        rotation = d.getRotation();
+                    }
+                }
+            } catch (Throwable t) {
+                ModuleLog.w(t);
+            }
+            boolean still = rotation >= 0 && rotation == last[0];
+            last[0] = rotation;
+            if (still && now - start >= SETTLE_MIN_MS) {
+                h.postDelayed(() -> fadeCover(h), SETTLE_DRAW_MS);
+                return;
+            }
+            h.postDelayed(step[0], SETTLE_STEP_MS);
+        };
+        h.postDelayed(HIDE_COVER, COVER_MAX_MS + FADE_MS); // the bound, whatever happens
+        h.postDelayed(step[0], SETTLE_STEP_MS);
+    }
+
+    // The second screen's panel (1080 x 1240), either way round.
+    private static final int PANEL_SHORT = 1080, PANEL_LONG = 1240;
+
+    private static void fadeCover(Handler h) {
+        if (covers.isEmpty()) return;
+        for (View v : covers) {
+            try {
+                v.animate().alpha(0f).setDuration(FADE_MS).start();
+            } catch (Throwable t) {
+                ModuleLog.w(t);
+            }
+        }
+        h.removeCallbacks(HIDE_COVER);
+        h.postDelayed(HIDE_COVER, FADE_MS + 16);
+    }
 
     /**
      * The keys' switch. When the panel moves between display 0 and display 4 it shows a frame
@@ -527,8 +601,7 @@ final class MainScreen {
             if (DisplaySwap.isSwapped() == was) {
                 hideCover(); // nothing moved (the "keep?" card): no black
             } else {
-                h.removeCallbacks(HIDE_COVER);
-                h.postDelayed(HIDE_COVER, SWAP_COVER_MS);
+                revealWhenSettled(h);
             }
         };
         showCover(COVER_MAX_MS, Display.DEFAULT_DISPLAY, MainModule.SECOND_SCREEN_DISPLAY_ID);

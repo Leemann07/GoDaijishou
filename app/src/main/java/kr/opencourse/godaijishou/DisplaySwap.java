@@ -50,6 +50,9 @@ final class DisplaySwap {
     }
 
     private static boolean resyncing;
+    // Display events up to this uptime are checked for a stale window size (set() arms it).
+    private static volatile long resyncUntil;
+    private static final long RESYNC_WINDOW_MS = 3_000;
 
     static void install(ClassLoader cl) {
         XposedBridge.hookAllConstructors(
@@ -93,10 +96,12 @@ final class DisplaySwap {
                     }
                 });
         // A display coming back (or changed) with a stale size is put right in the same call,
-        // before its next frame (the posted resyncs came a few frames late).
+        // before its next frame (the posted resyncs came a few frames late). Only just after a
+        // swap or restore: any other display event (a rotation, a refresh rate) costs one read.
         XC_MethodHook resyncNow = new XC_MethodHook() {
             @Override
             protected void afterHookedMethod(MethodHookParam param) {
+                if (android.os.SystemClock.uptimeMillis() > resyncUntil) return;
                 if (resyncing) return; // our own onDisplayChanged
                 resyncing = true;
                 try {
@@ -144,7 +149,7 @@ final class DisplaySwap {
                     java.lang.reflect.Member.class);
             deopt.invoke(null, modulator.getDeclaredMethod("run"));
         } catch (Throwable t) {
-            android.util.Log.w("GoDaijishou", "modulator deoptimize", t);
+            ModuleLog.w("modulator deoptimize", t);
         }
     }
 
@@ -257,7 +262,7 @@ final class DisplaySwap {
                 XposedHelpers.callMethod(m, "updateLogicalDisplaysLocked");
             }
         } catch (Throwable t) {
-            android.util.Log.w("GoDaijishou", "regroup", t);
+            ModuleLog.w("regroup", t);
         }
     }
 
@@ -324,6 +329,7 @@ final class DisplaySwap {
         // LG's camera follows (SwivelFold): the folded phone's camera while swapped. Written
         // outside the display lock. (SystemUI does not follow: see MainModule.)
         publish(DisplaySwap.swapped);
+        resyncUntil = android.os.SystemClock.uptimeMillis() + RESYNC_WINDOW_MS;
         Handler rh = SystemSettings.handler();
         if (rh != null) {
             rh.removeCallbacks(RESYNC_WINDOWS);
@@ -358,6 +364,9 @@ final class DisplaySwap {
             Object dmi = XposedHelpers.getObjectField(wms, "mDisplayManagerInternal");
             Object real = XposedHelpers.newInstance(Class.forName("android.view.DisplayInfo"));
             for (int id : new int[] {android.view.Display.DEFAULT_DISPLAY, MainModule.SECOND_SCREEN_DISPLAY_ID}) {
+                // Swapped, display 4 is the top panel, disabled: its window state is never
+                // updated, so it never matches and would be "changed" again on every event.
+                if (swapped && id == MainModule.SECOND_SCREEN_DISPLAY_ID) continue;
                 Object dc = XposedHelpers.callMethod(root, "getDisplayContent", id);
                 if (dc == null) continue;
                 XposedHelpers.callMethod(dmi, "getNonOverrideDisplayInfo", id, real); // the panel, not what WM told it
@@ -365,6 +374,8 @@ final class DisplaySwap {
                         && XposedHelpers.getIntField(dc, "mInitialDisplayHeight") == XposedHelpers.getIntField(real, "logicalHeight")) continue;
                 XposedHelpers.callMethod(root, "onDisplayChanged", id);
             }
+            // The panel's rotation in this same pass, not a frame later.
+            XposedHelpers.callMethod(wms, "updateRotation", false, false);
         } catch (Throwable t) {
             ModuleLog.w(t);
         }

@@ -91,6 +91,15 @@ final class HomeGestureFallback {
     private static void watch(Object receiver, InputEvent event) {
         if (!(event instanceof MotionEvent)) return;
         MotionEvent ev = (MotionEvent) event;
+        // Hot path (every touch, on each of LG's pill watchers): while quickstep is connected
+        // no swipe starts here, and a move that is not ours ends at one check.
+        if (ev.getActionMasked() == MotionEvent.ACTION_DOWN) {
+            if (Boolean.TRUE.equals(quickstepConnected())) return;
+        } else {
+            synchronized (lock) {
+                if (!tracker.owns(receiver, ev.getDownTime(), ev.getDeviceId())) return;
+            }
+        }
         View handle = (View) XposedHelpers.getObjectField(receiver, "this$0");
         Context context = handle.getContext();
         if (!onMainDisplay(context)) return;
@@ -211,7 +220,7 @@ final class HomeGestureFallback {
 
     private static void trace(String message) {
         // Only edge candidates and completed swipes, so a suppressed gesture is diagnosable.
-        android.util.Log.v("GoDaijishouGesture", message);
+        ModuleLog.i("gesture: " + message);
     }
 
     // --- Is this gesture ours to finish? ---
