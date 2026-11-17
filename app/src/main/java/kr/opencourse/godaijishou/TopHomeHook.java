@@ -46,24 +46,9 @@ final class TopHomeHook {
     static void install(ClassLoader cl) {
         // Tells the app (and through it system_server) that LG's home is hooked this boot:
         // main screen mode needs it and falls back to second screen mode without it.
-        XposedBridge.hookAllMethods(android.app.Application.class, "onCreate", new XC_MethodHook() {
-            private boolean reported;
-
-            @Override
-            protected void afterHookedMethod(MethodHookParam param) {
-                if (reported) return;
-                reported = true;
-                Context app = (Context) param.thisObject;
-                new Thread(() -> {
-                    try (android.database.Cursor c = app.getContentResolver().query(
-                            SettingsProvider.CONTENT_URI, null, "hook:" + HOOK_NAME, null, null)) {
-                        // nothing to read
-                    } catch (Throwable t) {
-                        ModuleLog.w(t);
-                    }
-                }, "GoDaijishou-report").start();
-            }
-        });
+        // Reported from Instrumentation.callApplicationOnCreate: LG home 9.70.22 never reached
+        // the Application.onCreate hook used before, so main screen mode stayed locked.
+        HookReport.onAppStart(HOOK_NAME);
         installGridOnce(cl);
         installSecondScreenGestures(cl);
         safely(() -> installProfileRefresh(cl));

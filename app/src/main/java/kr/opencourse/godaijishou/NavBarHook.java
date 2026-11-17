@@ -137,6 +137,7 @@ final class NavBarHook {
             ModuleLog.w(t);
             return;
         }
+        HookReport.onImeStart(HookReport.IME);
         XposedBridge.hookAllMethods(impl, "getSystemInsets", new XC_MethodHook() {
             @Override
             protected void beforeHookedMethod(MethodHookParam param) {

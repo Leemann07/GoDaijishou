@@ -31,6 +31,7 @@ final class SwivelWarningHook {
     // itself left ...Sub.show() filling a layout that never got inflated (the pop-up
     // camera service crashed).
     static void install(ClassLoader cl) {
+        HookReport.onAppStart(HookReport.POPUP_CAMERA);
         XposedHelpers.findAndHookMethod(Dialog.class, "show", new XC_MethodHook() {
             @Override
             protected void afterHookedMethod(MethodHookParam param) {

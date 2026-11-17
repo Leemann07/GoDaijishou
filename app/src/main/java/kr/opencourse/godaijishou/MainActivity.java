@@ -129,11 +129,11 @@ public class MainActivity extends AppCompatActivity {
         // These need an extra LSPosed scope: turning one on explains which, unless that
         // hook is already known to be loaded this boot.
         bindScopedSwitch(R.id.row_hide_swivel_warnings, findViewById(R.id.switch_hide_swivel_warnings),
-                AppPreferences.KEY_HIDE_SWIVEL_WARNINGS, R.string.scope_popupcamera, null);
+                AppPreferences.KEY_HIDE_SWIVEL_WARNINGS, R.string.scope_popupcamera, HookReport.POPUP_CAMERA);
         bindScopedSwitch(R.id.row_slim_nav_pill, findViewById(R.id.switch_slim_nav_pill),
                 AppPreferences.KEY_SLIM_NAV_PILL, R.string.scope_systemui, "systemui");
         bindScopedSwitch(R.id.row_hide_ime_nav_strip, findViewById(R.id.switch_hide_ime_nav_strip),
-                AppPreferences.KEY_HIDE_IME_NAV_STRIP, R.string.scope_systemui_keyboard, null);
+                AppPreferences.KEY_HIDE_IME_NAV_STRIP, R.string.scope_systemui_keyboard, HookReport.IME);
         bindScopedSwitch(R.id.row_fingerprint_off, findViewById(R.id.switch_fingerprint_off),
                 AppPreferences.KEY_FINGERPRINT_OFF, R.string.scope_system, "android");
         buildPerfProfileButtons();
