@@ -45,6 +45,7 @@ public class MainModule implements IXposedHookLoadPackage {
             safely(() -> BottomGestureHook.install(cl));
             safely(() -> HomeGestureFallback.install(cl));
             safely(() -> QsRowsHook.install(cl));
+            safely(() -> ShadeRotationHook.install(cl));
             // SwivelFold stays out: a folded SystemUI over the swivel lock left the phone locked.
         } else if ("android".equals(pkg)) {
             systemLoader = cl;

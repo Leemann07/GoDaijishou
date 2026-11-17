@@ -70,6 +70,7 @@ final class TopHomeHook {
         safely(() -> installLabelsBelow(cl));
         safely(() -> installFullIcons(cl));
         safely(() -> installFreshLayout(cl));
+        safely(() -> installNoZoomRestart(cl));
         for (String name : new String[] {POSTURE, DISPLAY_HELPER}) {
             Class<?> c = XposedHelpers.findClassIfExists(name, cl);
             if (c == null) continue;
@@ -163,8 +164,20 @@ final class TopHomeHook {
                         app.getSystemService(android.hardware.display.DisplayManager.class);
                 if (dm == null) return;
                 android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
-                Runnable refresh = () -> refreshProfile(cl, app);
+                // The panel moved (main screen mode switch): the home needs a fresh start for
+                // the other panel anyway (installFreshLayout). Done now, under the switch's
+                // cover, not when the home is next shown: that was the first home swipe after
+                // every switch, killed halfway (no home, a stutter).
+                Runnable refresh = () -> {
+                    int[] now = panel(app);
+                    if (startPanel != null && now != null && !java.util.Arrays.equals(now, startPanel)) {
+                        android.os.Process.killProcess(android.os.Process.myPid());
+                        return;
+                    }
+                    refreshProfile(cl, app);
+                };
                 profileFor = panel(app); // the process computed its profile at start
+                startPanel = profileFor;
                 dm.registerDisplayListener(new android.hardware.display.DisplayManager.DisplayListener() {
                     @Override
                     public void onDisplayAdded(int displayId) {
@@ -185,6 +198,9 @@ final class TopHomeHook {
             }
         });
     }
+
+    // The main display's panel when this process started.
+    private static int[] startPanel;
 
     // The main display's panel, whichever way it is turned: {short side, long side, dpi}.
     // A rotation alone is not a new panel (LG's home handles rotation itself).
@@ -645,6 +661,47 @@ final class TopHomeHook {
         XposedBridge.hookAllMethods(launcher, "onResume", check);
         // The home handles rotation itself (no restart of the activity): checked there too.
         XposedBridge.hookAllMethods(launcher, "onConfigurationChanged", check);
+    }
+
+    /**
+     * LG's home keeps one "last density" and restarts itself when it starts at another one,
+     * taking it for a screen zoom change. The two panels have their own densities, so every
+     * main screen mode switch was a "zoom change": a second restart right after ours. A start
+     * on another panel than last time is not a zoom change (the density is stored all the
+     * same); a real zoom change on the same panel still restarts it as LG intended.
+     */
+    private static void installNoZoomRestart(ClassLoader cl) {
+        Class<?> watcher = XposedHelpers.findClassIfExists("com.lge.launcher3.ScreenZoomChangeWatcher", cl);
+        if (watcher == null) return;
+        boolean[] panelMoved = {false};
+        XposedBridge.hookAllMethods(watcher, "checkScreenZoomChangedOnCreate", new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                panelMoved[0] = false;
+                if (param.args.length == 0 || !(param.args[0] instanceof Context)) return;
+                Context c = (Context) param.args[0];
+                int[] now = panel(c);
+                if (now == null) return;
+                String key = now[0] + "x" + now[1];
+                android.content.SharedPreferences p = c.getSharedPreferences("wingcustom_panel", Context.MODE_PRIVATE);
+                String last = p.getString("panel", null);
+                if (key.equals(last)) return;
+                p.edit().putString("panel", key).apply();
+                panelMoved[0] = last != null;
+            }
+
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                if (panelMoved[0]) param.setResult(false);
+                panelMoved[0] = false;
+            }
+        });
+        XposedBridge.hookAllMethods(watcher, "notifyScreenZoomListeners", new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                if (panelMoved[0]) param.setResult(null);
+            }
+        });
     }
 
     // {width, height, density} of the main display as it is turned now.

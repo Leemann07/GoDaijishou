@@ -113,9 +113,9 @@ final class SwivelPosture {
                     if (from != null) XposedHelpers.callMethod(from, "removeDisplayLocked", display);
                     XposedHelpers.callMethod(to, "addDisplayLocked", display);
                     XposedHelpers.callMethod(display, "updateDisplayGroupIdLocked", 0);
-                    android.util.Log.i("GoDaijishou", "display 0 into the default display group (was " + group + ")");
+                    ModuleLog.i("display 0 into the default display group (was " + group + ")");
                 } catch (Throwable t) {
-                    android.util.Log.w("GoDaijishou", "display group", t);
+                    ModuleLog.w("display group", t);
                 }
             }
         });
@@ -164,9 +164,9 @@ final class SwivelPosture {
                     synchronized (ctl) {
                         XposedHelpers.callMethod(w, "updateStateLocked", false, wingKnock(ctl), true);
                     }
-                    android.util.Log.i("GoDaijishou", "second panel touch: knock-on standby again");
+                    ModuleLog.i("second panel touch: knock-on standby again");
                 } catch (Throwable t) {
-                    android.util.Log.w("GoDaijishou", "knock-on standby", t);
+                    ModuleLog.w("knock-on standby", t);
                 }
             }, ms);
         }
@@ -200,7 +200,7 @@ final class SwivelPosture {
                             param.setResult(XposedHelpers.callMethod(param.thisObject,
                                     "requestDisplayStateLockedInternal", param.args[0], param.args[1], param.args[2]));
                         } catch (Throwable t) {
-                            android.util.Log.w("GoDaijishou", "panel power", t);
+                            ModuleLog.w("panel power", t);
                         }
                     }
                 });
@@ -234,9 +234,9 @@ final class SwivelPosture {
                 if (!folded() || XposedHelpers.getBooleanField(param.thisObject, "mSwiveled")) return;
                 try {
                     XposedHelpers.callMethod(param.thisObject, "wakeUp", param.args[0]);
-                    android.util.Log.i("GoDaijishou", "knock-on on the main screen");
+                    ModuleLog.i("knock-on on the main screen");
                 } catch (Throwable t) {
-                    android.util.Log.w("GoDaijishou", "knock-on", t);
+                    ModuleLog.w("knock-on", t);
                 }
                 param.setResult(null);
             }
@@ -250,7 +250,7 @@ final class SwivelPosture {
                 if (m.getName().equals("handleWLPWG")) deopt.invoke(null, m);
             }
         } catch (Throwable t) {
-            android.util.Log.w("GoDaijishou", "knock-on deoptimize", t);
+            ModuleLog.w("knock-on deoptimize", t);
         }
         XposedBridge.hookAllMethods(ctl, "updateScreenStateLocked", new XC_MethodHook() {
             @Override
@@ -264,11 +264,11 @@ final class SwivelPosture {
                     if (w == null) return;
                     boolean knock = wingKnock(param.thisObject);
                     XposedHelpers.callMethod(w, "updateStateLocked", mainScreenOn, knock, true);
-                    android.util.Log.i("GoDaijishou", "second panel touch: screen " + (mainScreenOn ? "on" : "off")
+                    ModuleLog.i("second panel touch: screen " + (mainScreenOn ? "on" : "off")
                             + ", knock-on " + knock);
                     if (!mainScreenOn) rearmLater(param.thisObject, w);
                 } catch (Throwable t) {
-                    android.util.Log.w("GoDaijishou", "sub touch", t);
+                    ModuleLog.w("sub touch", t);
                 }
             }
         });
@@ -296,7 +296,7 @@ final class SwivelPosture {
             if (swivel != STATE_OPEN) return;
             XposedHelpers.callMethod(s, "callbackSwivelStateChanged", OPENING);
             XposedHelpers.callMethod(s, "callbackSwivelStateChanged", OPENED);
-            android.util.Log.i("GoDaijishou", "swivel announced " + (want ? "closed (main screen mode)" : "open"));
+            ModuleLog.i("swivel announced " + (want ? "closed (main screen mode)" : "open"));
         } catch (Throwable t) {
             ModuleLog.w(t);
         }

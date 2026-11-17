@@ -52,6 +52,26 @@ final class RotationHook {
                     }
                 });
 
+        // A display is born at rotation 0. The second screen's display comes back new after
+        // main screen mode (display 4 added again): it showed portrait first, then turned.
+        // Born at the forced rotation instead, its first frame is already the right way round.
+        XposedBridge.hookAllConstructors(
+                XposedHelpers.findClass("com.android.server.wm.DisplayRotation", classLoader),
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (!SystemSettings.forceRotation) return;
+                        if (!isSecondScreen(param.thisObject)) return;
+                        try {
+                            int r = forcedRotation();
+                            XposedHelpers.setIntField(param.thisObject, "mRotation", r);
+                            XposedHelpers.setIntField(param.thisObject, "mUserRotation", r);
+                        } catch (Throwable t) {
+                            ModuleLog.w(t);
+                        }
+                    }
+                });
+
         // Keep the locked-rotation baseline consistent with the forced value.
         XposedHelpers.findAndHookMethod(
                 "com.android.server.wm.DisplayRotation", classLoader,
