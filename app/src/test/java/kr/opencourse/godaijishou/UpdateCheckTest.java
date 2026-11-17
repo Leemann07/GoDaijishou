@@ -23,4 +23,9 @@ public class UpdateCheckTest {
         assertTrue(UpdateCheck.isNewer("2.1.10", "2.1.9"));
         assertTrue(UpdateCheck.isNewer("2.2", "2.1.9"));
     }
+
+    @Test
+    public void hexIsLowercaseTwoDigitsPerByte() {
+        org.junit.Assert.assertEquals("00ff0a", SelfUpdate.hex(new byte[]{0, (byte) 0xff, 10}));
+    }
 }

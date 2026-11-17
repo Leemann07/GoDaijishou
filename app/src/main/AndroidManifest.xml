@@ -7,8 +7,13 @@
         android:protectionLevel="signature" />
     <uses-permission android:name="kr.opencourse.godaijishou.permission.SYSTEM_ACTION" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-    <!-- Update check: one request to the GitHub releases API, at most every 6 hours -->
+    <!-- Update check: one request to the GitHub releases API when the screen opens (an
+         unchanged release is a free 304); the update itself only when the pill is tapped -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Self update (SelfUpdate): Android's installer, for this app's own release only.
+         The second lets an update of an app it installed itself go without a prompt (12+). -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
 
     <!-- Package visibility for checking other apps -->
     <queries>
@@ -79,6 +84,11 @@
                 <action android:name="kr.opencourse.godaijishou.SET_SCREEN_MODE" />
             </intent-filter>
         </receiver>
+
+        <!-- The installer's answer to a self update (our PendingIntent only) -->
+        <receiver
+            android:name=".SelfUpdateReceiver"
+            android:exported="false" />
 
         <provider
             android:name=".SettingsProvider"

@@ -47,14 +47,18 @@ final class UpdateCheck {
             return;
         }
         Handler main = new Handler(Looper.getMainLooper());
-        String etag = known != null ? prefs.getString("etag", null) : null;
+        // The ETag only with everything it stands for stored (an older build kept no APK link).
+        String etag = known != null && prefs.contains("apk_url") ? prefs.getString("etag", null) : null;
         new Thread(() -> {
             String[] r = fetch(etag); // {tag, etag}; tag null when unchanged (304)
             String latest = null;
             if (r != null) {
                 latest = r[0] != null ? r[0] : known;
                 SharedPreferences.Editor e = prefs.edit().putLong("checked_at", System.currentTimeMillis());
-                if (r[0] != null) e.putString("latest", r[0]).putString("etag", r[1]);
+                if (r[0] != null) {
+                    e.putString("latest", r[0]).putString("etag", r[1])
+                            .putString("apk_url", r[2]).putString("apk_sha256", r[3]);
+                }
                 e.apply();
             }
             final String found = latest;
@@ -65,7 +69,17 @@ final class UpdateCheck {
         }, "GoDaijishou-update").start();
     }
 
-    /** {tag, etag} on 200, {null, null} on 304, null when offline or refused. */
+    /** The release APK's download address, null when the release has none (or not known yet). */
+    static String apkUrl(Context c) {
+        return c.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("apk_url", null);
+    }
+
+    /** The release APK's SHA-256 (hex) as GitHub gives it, null when it gives none. */
+    static String apkSha256(Context c) {
+        return c.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("apk_sha256", null);
+    }
+
+    /** {tag, etag, apk url, apk sha256} on 200, {null, ...} on 304, null when offline or refused. */
     private static String[] fetch(String etag) {
         HttpURLConnection c = null;
         try {
@@ -77,16 +91,28 @@ final class UpdateCheck {
             c.setRequestProperty("User-Agent", "GoDaijishou");
             if (etag != null) c.setRequestProperty("If-None-Match", etag);
             int code = c.getResponseCode();
-            if (code == HttpURLConnection.HTTP_NOT_MODIFIED) return new String[]{null, null};
+            if (code == HttpURLConnection.HTTP_NOT_MODIFIED) return new String[]{null, null, null, null};
             if (code != 200) return null;
             try (InputStream in = c.getInputStream()) {
                 ByteArrayOutputStream out = new ByteArrayOutputStream();
                 byte[] buf = new byte[8192];
                 int n;
                 while ((n = in.read(buf)) > 0 && out.size() < 512 * 1024) out.write(buf, 0, n);
-                String tag = new JSONObject(out.toString("UTF-8")).optString("tag_name", "");
+                JSONObject release = new JSONObject(out.toString("UTF-8"));
+                String tag = release.optString("tag_name", "");
                 tag = tag.startsWith("v") || tag.startsWith("V") ? tag.substring(1) : tag;
-                return tag.isEmpty() ? null : new String[]{tag, c.getHeaderField("ETag")};
+                String apk = null, sha = null;
+                org.json.JSONArray assets = release.optJSONArray("assets");
+                for (int i = 0; assets != null && i < assets.length(); i++) {
+                    JSONObject a = assets.optJSONObject(i);
+                    if (a == null || !a.optString("name", "").endsWith(".apk")) continue;
+                    apk = a.optString("browser_download_url", null);
+                    String digest = a.optString("digest", "");
+                    sha = digest.startsWith("sha256:") ? digest.substring(7) : null;
+                    break;
+                }
+                if (apk != null && !apk.startsWith("https://github.com/")) apk = null; // only GitHub's own
+                return tag.isEmpty() ? null : new String[]{tag, c.getHeaderField("ETag"), apk, sha};
             }
         } catch (Throwable t) {
             return null; // offline or rate-limited: try again next time
