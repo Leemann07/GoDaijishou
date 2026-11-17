@@ -22,8 +22,8 @@ android {
         minSdkVersion 26
         // 2. 타겟 SDK 버전도 34로 맞춰줍니다.
         targetSdkVersion 34
-        versionCode 35
-        versionName "2.2.1"
+        versionCode 36
+        versionName "2.2.2"
 
         // Fingerprint of the code that runs inside system_server / SystemUI (all sources but
         // the app's own screen and the hot-swapped StripView). The hook reports the value it
@@ -36,6 +36,15 @@ android {
 
     // 집/회사 어디서 빌드하든 같은 키로 서명되도록 keystore/debug.keystore 를 쓴다 (gitignore, 없으면 기본 ~/.android 키).
     def sharedDebugKeystore = rootProject.file("keystore/debug.keystore")
+    // The release key (keystore.properties + keystore/release.jks, both git-ignored; CI writes
+    // them from secrets). Debug builds use it too, so an adb install and a release replace
+    // each other. Releases also carry signing/rotation.lineage (debug key -> release key, added
+    // in CI by apksigner) so copies signed with the old debug key update in place.
+    def releaseProps = new Properties()
+    def releasePropsFile = rootProject.file("keystore.properties")
+    if (releasePropsFile.exists()) releasePropsFile.withInputStream { releaseProps.load(it) }
+    def hasReleaseKey = releaseProps.getProperty("storeFile") != null
+            && rootProject.file(releaseProps.getProperty("storeFile")).exists()
     signingConfigs {
         debug {
             if (sharedDebugKeystore.exists()) {
@@ -45,15 +54,25 @@ android {
                 keyPassword "android"
             }
         }
+        release {
+            if (hasReleaseKey) {
+                storeFile rootProject.file(releaseProps.getProperty("storeFile"))
+                storePassword releaseProps.getProperty("storePassword")
+                keyAlias releaseProps.getProperty("keyAlias")
+                keyPassword releaseProps.getProperty("keyPassword")
+            }
+        }
     }
 
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            // 개인용 모듈이라 별도 릴리즈 키스토어를 관리하지 않고 디버그 키로 서명한다.
-            // (안드로이드는 미서명 APK 설치를 거부하므로 서명 자체는 필수)
-            signingConfig signingConfigs.debug
+            // The release key when present (see signingConfigs), else the shared debug key.
+            signingConfig hasReleaseKey ? signingConfigs.release : signingConfigs.debug
+        }
+        debug {
+            if (hasReleaseKey) signingConfig signingConfigs.release
         }
     }
     // Stable resource IDs. The notification panel, volume bar and battery bar run inside
