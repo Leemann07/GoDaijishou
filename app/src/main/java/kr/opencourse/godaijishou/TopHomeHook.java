@@ -44,26 +44,7 @@ final class TopHomeHook {
     }
 
     static void install(ClassLoader cl) {
-        // Tells the app (and through it system_server) that LG's home is hooked this boot:
-        // main screen mode needs it and falls back to second screen mode without it.
-        XposedBridge.hookAllMethods(android.app.Application.class, "onCreate", new XC_MethodHook() {
-            private boolean reported;
-
-            @Override
-            protected void afterHookedMethod(MethodHookParam param) {
-                if (reported) return;
-                reported = true;
-                Context app = (Context) param.thisObject;
-                new Thread(() -> {
-                    try (android.database.Cursor c = app.getContentResolver().query(
-                            SettingsProvider.CONTENT_URI, null, "hook:" + HOOK_NAME, null, null)) {
-                        // nothing to read
-                    } catch (Throwable t) {
-                        ModuleLog.w(t);
-                    }
-                }, "GoDaijishou-report").start();
-            }
-        });
+        safely(() -> installReport(cl));
         installGridOnce(cl);
         installSecondScreenGestures(cl);
         safely(() -> installProfileRefresh(cl));
@@ -307,6 +288,31 @@ final class TopHomeHook {
     private static int dotsAboveBar(android.view.View bar, android.view.View dots) {
         int center = bar.getTop() - Math.round(dots.getHeight() * 0.8f);
         return center - (dots.getTop() + dots.getHeight() / 2);
+    }
+
+    /**
+     * Tells the app (and through it system_server) that LG's home is hooked this boot: main
+     * screen mode needs it and falls back to second screen mode without it.
+     *
+     * Application.onCreate alone was not enough: it is an empty framework method, skipped when
+     * the home's Application doesn't call super, or when its compiled code inlined that empty
+     * call (LG Home 9.70.22 never reported). The home's own Launcher.onCreate/onResume have a
+     * body of their own and run every time the home is shown, so a report refused early in
+     * the boot goes through on a later one. Application.onCreate stays as it was, as a backup.
+     */
+    private static void installReport(ClassLoader cl) {
+        XC_MethodHook onThis = new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                HookReport.report((Context) param.thisObject, HOOK_NAME);
+            }
+        };
+        Class<?> launcher = XposedHelpers.findClassIfExists("com.android.launcher3.Launcher", cl);
+        if (launcher != null) {
+            safely(() -> XposedBridge.hookAllMethods(launcher, "onCreate", onThis));
+            safely(() -> XposedBridge.hookAllMethods(launcher, "onResume", onThis));
+        }
+        safely(() -> XposedBridge.hookAllMethods(android.app.Application.class, "onCreate", onThis));
     }
 
     private static void safely(Runnable r) {

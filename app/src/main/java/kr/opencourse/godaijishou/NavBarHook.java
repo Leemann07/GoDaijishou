@@ -107,19 +107,9 @@ final class NavBarHook {
     }
 
     // Tells the app "the SystemUI hook is loaded this boot" (the app warns when it isn't).
-    private static boolean reported = false;
-
+    // A refused report is tried again on the next handle (HookReport).
     private static void reportLoaded(Context context) {
-        if (reported) return;
-        reported = true;
-        new Thread(() -> {
-            try (android.database.Cursor c = context.getContentResolver().query(
-                    SettingsProvider.CONTENT_URI, null, "hook:systemui", null, null)) {
-                // nothing to read
-            } catch (Throwable ignored) {
-                ModuleLog.w(ignored);
-            }
-        }, "GoDaijishou-report").start();
+        HookReport.report(context, "systemui");
     }
 
     // --- Keyboard strip (SystemUI and keyboard processes) ---
