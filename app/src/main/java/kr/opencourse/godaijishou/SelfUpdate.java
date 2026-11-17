@@ -23,13 +23,13 @@ import java.util.Arrays;
  * The app updates itself from its GitHub release (no hook, no root): Android's own installer.
  *
  * The release's APK is downloaded into the app's cache, checked (the release's SHA-256 when
- * GitHub gives one; always: this package, a newer version, the same signing key as the app
- * installed now), and handed to PackageInstaller asking for no user action. Android 12+ lets
- * an app update itself without a prompt once it installed the version on the phone: the first
- * update from here (the phone's copy came from adb or a browser) shows the system's one-tap
- * prompt, the next ones install by themselves. The phone is never rebooted from here: the
- * hooks take the new code at the next reboot, which the person starts (a bad release must
- * never reboot the phone by itself).
+ * GitHub gives one; always: this package, a newer version, signed by the installed app's key
+ * or by the key it rotated to), and handed to PackageInstaller asking for no user action.
+ * Android 12+ lets an app update itself without a prompt once it installed the version on the
+ * phone: the first update from here (the phone's copy came from adb or a browser) shows the
+ * system's one-tap prompt, the next ones install by themselves. The phone is never rebooted
+ * from here: the hooks take the new code at the next reboot, which the person starts (a bad
+ * release must never reboot the phone by itself).
  */
 final class SelfUpdate {
 
@@ -126,9 +126,22 @@ final class SelfUpdate {
         if (next == null || next.signingInfo == null || !c.getPackageName().equals(next.packageName)) return false;
         PackageInfo now = pm.getPackageInfo(c.getPackageName(), PackageManager.GET_SIGNING_CERTIFICATES);
         if (next.getLongVersionCode() <= now.getLongVersionCode()) return false;
-        Signature[] a = next.signingInfo.getApkContentsSigners();
-        Signature[] b = now.signingInfo.getApkContentsSigners();
-        return a != null && b != null && a.length > 0 && Arrays.equals(a, b);
+        return sameSigner(next.signingInfo, now.signingInfo);
+    }
+
+    // The new APK is signed by the installed app's key, or by a key that key handed over to
+    // (APK signature v3 rotation: its history lists the installed key). Android checks the
+    // same when it installs; this only stops a wrong file before the download is handed over.
+    private static boolean sameSigner(android.content.pm.SigningInfo next, android.content.pm.SigningInfo now) {
+        Signature[] installed = now.getApkContentsSigners();
+        Signature[] history = next.hasMultipleSigners()
+                ? next.getApkContentsSigners() : next.getSigningCertificateHistory();
+        if (installed == null || installed.length == 0 || history == null) return false;
+        java.util.List<Signature> known = Arrays.asList(history);
+        for (Signature s : installed) {
+            if (!known.contains(s)) return false;
+        }
+        return true;
     }
 
     static String sha256Of(File f) throws Exception {

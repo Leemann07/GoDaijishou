@@ -1,4 +1,4 @@
-# Push a tag like v1.5 -> build the APK, sign it with the shared debug key, publish a release.
+# Push a tag like v1.5 -> build the APK, sign it with the release key (plus the key rotation), publish a release.
 name: Release
 
 on:
@@ -31,20 +31,44 @@ jobs:
           java-version: "17"
           cache: gradle
 
-      # Same key as local builds, so the release installs over the app already on the phone.
-      - name: Restore signing key
+      # Release key (signs everything) and the old shared debug key (only to prove the
+      # rotation: signing/rotation.lineage says debug key -> release key, so phones holding a
+      # copy signed with the debug key take this update in place).
+      - name: Restore signing keys
         env:
           DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
         run: |
           test -n "$DEBUG_KEYSTORE_BASE64" || { echo "DEBUG_KEYSTORE_BASE64 secret is missing"; exit 1; }
+          test -n "$RELEASE_KEYSTORE_BASE64" || { echo "RELEASE_KEYSTORE_BASE64 secret is missing"; exit 1; }
+          test -n "$RELEASE_KEYSTORE_PASSWORD" || { echo "RELEASE_KEYSTORE_PASSWORD secret is missing"; exit 1; }
           mkdir -p keystore
           echo "$DEBUG_KEYSTORE_BASE64" | base64 -d > keystore/debug.keystore
+          echo "$RELEASE_KEYSTORE_BASE64" | base64 -d > keystore/release.jks
+          printf 'storePassword=%s\nkeyPassword=%s\nkeyAlias=wingcustom\nstoreFile=keystore/release.jks\n' \
+            "$RELEASE_KEYSTORE_PASSWORD" "$RELEASE_KEYSTORE_PASSWORD" > keystore.properties
 
       - name: Build
         run: |
           chmod +x gradlew
           ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleRelease
-          cp app/build/outputs/apk/release/app-release.apk "WingCustom-${TAG}.apk"
+
+      # v1/v2 with the old key (Android 8.x), v3 with the release key and the rotation proof
+      # (Android 9+), so every installed copy accepts the update.
+      - name: Sign with the key rotation
+        env:
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+        run: |
+          APKSIGNER=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          "$APKSIGNER" sign \
+            --ks keystore/debug.keystore --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android \
+            --next-signer \
+            --ks keystore/release.jks --ks-key-alias wingcustom \
+            --ks-pass env:RELEASE_KEYSTORE_PASSWORD --key-pass env:RELEASE_KEYSTORE_PASSWORD \
+            --lineage signing/rotation.lineage --rotation-min-sdk-version 28 \
+            --out "WingCustom-${TAG}.apk" app/build/outputs/apk/release/app-release.apk
+          "$APKSIGNER" verify --print-certs -v "WingCustom-${TAG}.apk" | grep -E "Verified using|Signer #|certificate DN"
 
       # Notes: the tag's annotation if it has one, else GitHub's generated notes.
       - name: Publish release
