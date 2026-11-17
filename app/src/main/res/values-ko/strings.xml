@@ -119,4 +119,10 @@
     <string name="scope_systemui_keyboard">• 시스템 UI (com.android.systemui)\n• LG 키보드 (com.lge.ime)</string>
     <string name="scope_popupcamera">• LG 팝업 카메라 (com.lge.popupcamera)</string>
     <string name="update_available">업데이트 v%1$s</string>
+    <string name="update_downloading">받는 중 %1$d%%</string>
+    <string name="update_installing">설치 중…</string>
+    <string name="update_allow_install">이 앱의 앱 설치 허용을 켠 뒤 업데이트를 다시 눌러 주세요</string>
+    <string name="update_err_download">업데이트 실패: 다운로드가 끝나지 않았어요</string>
+    <string name="update_err_verify">업데이트 중단: 이 앱의 정식 릴리스 파일이 아니에요</string>
+    <string name="update_err_install">업데이트 실패: 설치가 거부됐어요</string>
 </resources>

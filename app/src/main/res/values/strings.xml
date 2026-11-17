@@ -119,4 +119,10 @@
     <string name="scope_systemui_keyboard">• System UI (com.android.systemui)\n• LG keyboard (com.lge.ime)</string>
     <string name="scope_popupcamera">• LG pop-up camera (com.lge.popupcamera)</string>
     <string name="update_available">Update v%1$s</string>
+    <string name="update_downloading">Downloading %1$d%%</string>
+    <string name="update_installing">Installing…</string>
+    <string name="update_allow_install">Allow installs from this app, then tap the update again</string>
+    <string name="update_err_download">Update failed: the download did not finish</string>
+    <string name="update_err_verify">Update stopped: the file is not this app\'s signed release</string>
+    <string name="update_err_install">Update failed: the installer refused it</string>
 </resources>

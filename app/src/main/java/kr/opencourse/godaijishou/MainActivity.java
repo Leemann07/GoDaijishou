@@ -227,11 +227,13 @@ public class MainActivity extends AppCompatActivity {
         status.setClickable(!active);
     }
 
-    // Newer release on GitHub: the version pill turns butter and opens the release page.
+    // Newer release on GitHub: the version pill turns butter; tapping it updates the app.
     private void showUpdate(String version) {
         if (isFinishing()) return;
         TextView pill = findViewById(R.id.tv_version);
+        if (updating) return; // the pill shows the download now
         pill.setText(getString(R.string.update_available, version));
+        pill.setOnClickListener(v -> startSelfUpdate(version));
         pill.setTextColor(getColor(R.color.ft_on_butter));
         android.graphics.drawable.Drawable arrow = getDrawable(R.drawable.ic_ft_download);
         if (arrow != null) {
@@ -243,6 +245,52 @@ public class MainActivity extends AppCompatActivity {
         }
         pill.setBackgroundTintList(android.content.res.ColorStateList.valueOf(getColor(R.color.ft_butter)));
         pill.setCompoundDrawableTintList(null); // the download arrow carries its own tint
+    }
+
+    // --- Self update: the butter pill downloads and installs the release (SelfUpdate) ---
+
+    private boolean updating;
+
+    private void startSelfUpdate(String version) {
+        if (updating) return;
+        String url = UpdateCheck.apkUrl(this);
+        if (url == null) {
+            openReleases(); // no APK on the release (or not known yet): the page, as before
+            return;
+        }
+        if (!SelfUpdate.canInstall(this)) {
+            Toast.makeText(this, R.string.update_allow_install, Toast.LENGTH_LONG).show();
+            try {
+                startActivity(SelfUpdate.allowInstallsIntent(this));
+            } catch (ActivityNotFoundException e) {
+                openReleases();
+            }
+            return;
+        }
+        updating = true;
+        TextView pill = findViewById(R.id.tv_version);
+        pill.setText(getString(R.string.update_downloading, 0));
+        SelfUpdate.start(this, url, UpdateCheck.apkSha256(this), new SelfUpdate.Listener() {
+            @Override
+            public void onProgress(int percent) {
+                runOnUiThread(() -> pill.setText(getString(R.string.update_downloading, percent)));
+            }
+
+            @Override
+            public void onInstalling() {
+                runOnUiThread(() -> pill.setText(R.string.update_installing));
+            }
+
+            @Override
+            public void onFailed(int message) {
+                runOnUiThread(() -> {
+                    updating = false;
+                    if (isFinishing()) return;
+                    pill.setText(getString(R.string.update_available, version));
+                    Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
+                });
+            }
+        });
     }
 
     private void openReleases() {
